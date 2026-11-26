@@ -1,0 +1,34 @@
+meta {
+  name: 02. Список диалогов
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/public/v1/conversations
+  body: none
+  auth: inherit
+}
+
+params:query {
+  limit: 10
+  offset: 0
+}
+
+tests {
+  test("200 OK и массив conversations", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().conversations).to.be.an("array");
+  });
+}
+
+docs {
+  GET /public/v1/conversations
+
+  limit: 1–100 (по умолчанию 10)
+  offset: >= 0
+
+  Сортировка по last_activity, сначала недавно активные.
+  Ответ: { conversations: [ { uuid, skill_name, title, create_time, last_activity } ] }
+  title может быть null, если название не задано.
+}

@@ -1,0 +1,33 @@
+meta {
+  name: 02. Переименовать диалог
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/public/v1/conversations/{{conversationUuid}}/title
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "title": "Моё название"
+  }
+}
+
+tests {
+  test("204 No Content", function () {
+    expect(res.getStatus()).to.equal(204);
+  });
+}
+
+docs {
+  PUT /public/v1/conversations/{conversation_uuid}/title
+
+  Ручное изменение названия диалога клиентом.
+  Тело: { "title": "Моё название" }
+
+  Ответ: 204 No Content (проверено на живом API 25.11.2026;
+  в документации код ответа не указан).
+}

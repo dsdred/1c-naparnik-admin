@@ -1,0 +1,42 @@
+meta {
+  name: 01. Бюджет и лимиты
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/public/v1/budget
+  body: none
+  auth: inherit
+}
+
+tests {
+  test("200 OK и блок limits", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().limits).to.be.an("object");
+  });
+}
+
+docs {
+  GET /public/v1/budget
+
+  Ответ:
+  {
+    "limits": {
+      "sliding_5h": { "used_percent": 42.5, "resets_at": "..." },
+      "weekly":     { "used_percent": 18.0, "resets_at": "..." }
+    }
+  }
+
+  Расход приводится к обезличенным учётным единицам, клиенту отдаётся
+  только процент — абсолютные значения квот не публикуются.
+
+  Если 5-часовое окно не началось или истекло:
+  resets_at = null, used_percent = 0.
+
+  Превышение лимита при создании сообщения -> 402 budget_exceeded.
+  Слишком частые вызовы -> 429 rate_limit_exceeded.
+
+  Приём для замера «стоимости» операции: снять бюджет до и после
+  типового запроса, разница процентов = расход на операцию.
+}

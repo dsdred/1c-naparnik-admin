@@ -1,0 +1,56 @@
+meta {
+  name: 01. Отправить сообщение (SSE)
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/public/v1/conversations/{{conversationUuid}}/messages
+  body: json
+  auth: inherit
+}
+
+headers {
+  Accept: text/event-stream
+}
+
+body:json {
+  {
+    "parent_uuid": null,
+    "role": "user",
+    "content": "Объясни, что делает этот код и как его улучшить:\n\nПроцедура РассчитатьСумму()\n\tСумма = 0;\n\tДля Каждого Строка Из Таблица Цикл\n\t\tСумма = Сумма + Строка.Сумма;\n\tКонецЦикла;\nКонецПроцедуры",
+    "no_generate": false
+  }
+}
+
+docs {
+  POST /public/v1/conversations/{conversation_uuid}/messages
+  Заголовок: Accept: text/event-stream
+
+  Тело: { parent_uuid, role, content, tools?, no_generate? }
+  parent_uuid: null для первого сообщения, иначе uuid предыдущего.
+
+  Семантика потока:
+  1) первый пакет — эхо пользовательского сообщения (finished: true,
+     content и content_delta = null) — даёт uuid отправленного сообщения;
+  2) дальше ассистент идёт дельтами (finished: false, content_delta),
+     затем финальный пакет (finished: true, content);
+  3) финальный content приоритетнее накопленных дельт;
+  4) ответ может содержать несколько сообщений ассистента
+     (текст -> вызов инструмента -> следующий текст);
+  5) служебный пакет прогресса инструмента: finished: false, content: null,
+     uuid: "", в content_delta — tool_call_id и name.
+
+  Ошибки:
+  - до первого пакета — обычный HTTP-статус + JSON { error, error_type };
+  - после первого пакета — SSE-пакет data: {"error": ..., "error_type": ...}
+    при уже отправленном HTTP 200.
+
+  В Bruno включите отображение потока в панели ответа.
+  Эквивалент через curl:
+  curl -N -X POST "https://code.1c.ai/public/v1/conversations/<uuid>/messages" \
+    -H "Authorization: Bearer $API_KEY" \
+    -H "Accept: text/event-stream" \
+    -H "Content-Type: application/json" \
+    -d '{"parent_uuid":null,"role":"user","content":"Привет"}'
+}

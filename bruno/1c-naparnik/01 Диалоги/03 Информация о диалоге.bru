@@ -1,0 +1,32 @@
+meta {
+  name: 03. Информация о диалоге
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/public/v1/conversations/{{conversationUuid}}
+  body: none
+  auth: inherit
+}
+
+tests {
+  test("200 OK", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+}
+
+docs {
+  GET /public/v1/conversations/{conversation_uuid}
+
+  Возвращает основные сообщения диалога (пользователь, ассистент,
+  результаты инструментов — без служебных), отсортированные по времени,
+  единым плоским списком без ветвления.
+
+  Ответ: { uuid, create_time, skill_name, title, details, messages[] }
+  details: { ui_language, script_language, programming_language }
+  messages[]: ConversationMessage { uuid, parent_uuid, role, content, create_time }
+
+  404 resource_not_found — диалога нет;
+  403 access_denied / user_conversation_conflict — чужой диалог.
+}

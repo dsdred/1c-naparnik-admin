@@ -1,0 +1,49 @@
+meta {
+  name: 03. Результат инструмента
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/public/v1/conversations/{{conversationUuid}}/messages
+  body: json
+  auth: inherit
+}
+
+headers {
+  Accept: text/event-stream
+}
+
+body:json {
+  {
+    "parent_uuid": "msg-предыдущий-uuid",
+    "role": "tool",
+    "content": [
+      {
+        "tool_call_id": "call_abc",
+        "status": "ok",
+        "content": "+3 °C, облачно",
+        "structured_content": {
+          "temperature": 3,
+          "condition": "cloudy"
+        }
+      }
+    ]
+  }
+}
+
+docs {
+  POST /public/v1/conversations/{conversation_uuid}/messages
+  role: tool
+
+  content — СПИСОК ToolContent (по одному на tool_call_id):
+  { content?, structured_content?, details?, tool_call_id, status }
+
+  status:
+  - клиентские инструменты: ok (с content) | rejected (content опц. —
+    комментарий) | error (с content) | timeout (с content) | ignored (content = null);
+  - серверные инструменты (MCP/system): accepted (content = null) | rejected.
+
+  Первые пакеты ответа — подтверждения сохранённых tool-сообщений
+  (по одному на tool_call_id), затем обычная генерация ассистента.
+}

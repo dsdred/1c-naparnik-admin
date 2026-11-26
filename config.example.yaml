@@ -1,0 +1,31 @@
+# Пример конфигурации naparnik-admin.
+data_dir: ./data
+upstream_base: https://code.1c.ai/public/v1
+
+listeners:
+  # Шлюз для IDE. Для доступа из локальной сети замените на 0.0.0.0:47831.
+  - addr: 127.0.0.1:47831
+    kind: gateway
+  # Админка. Держите на loopback, если не нужен удалённый доступ.
+  - addr: 127.0.0.1:47830
+    kind: admin
+
+# final — отдавать финальный текст цельным куском, deltas — по мере генерации.
+stream_mode: final
+
+# Порог авто-компактизации контекста (доля от max_context_length).
+auto_compact_at: 0.85
+
+# Период опроса бюджета ключей (бесплатные запросы, лимит не расходуют).
+budget_poll_interval: 5m
+
+# Время жизни привязки сессии к диалогу Напарника.
+session_ttl: 2h
+
+# Таймаут одного запроса к Напарнику.
+request_timeout: 10m
+
+# Пороги для бейджей и webhook-алертов.
+warn_percent: 80
+crit_percent: 95
+alert_webhook: ""

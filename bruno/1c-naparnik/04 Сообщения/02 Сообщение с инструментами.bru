@@ -1,0 +1,55 @@
+meta {
+  name: 02. Сообщение с клиентскими инструментами
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/public/v1/conversations/{{conversationUuid}}/messages
+  body: json
+  auth: inherit
+}
+
+headers {
+  Accept: text/event-stream
+}
+
+body:json {
+  {
+    "parent_uuid": null,
+    "role": "user",
+    "content": "Какая сегодня погода в Москве?",
+    "tools": [
+      {
+        "name": "get_weather",
+        "description": "Возвращает текущую погоду в указанном городе",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string",
+              "description": "Город, например Москва"
+            }
+          },
+          "required": ["location"]
+        }
+      }
+    ],
+    "no_generate": false
+  }
+}
+
+docs {
+  POST /public/v1/conversations/{conversation_uuid}/messages
+
+  tools — список ClientTool, передаётся только при role: user.
+  ClientTool: { name, description, parameters (JSON Schema) }.
+
+  Если ассистент захочет вызвать инструмент, в финальном пакете придёт
+  content.tool_calls: [ { id, function: { name, arguments } } ],
+  где arguments — СТРОКА JSON (в дельтах может быть невалидной посередине,
+  собирайте накоплением).
+
+  Далее клиент выполняет инструмент локально и отправляет результат
+  запросом «03. Результат инструмента».
+}

@@ -1,0 +1,24 @@
+meta {
+  name: 04. Удалить диалог
+  type: http
+  seq: 4
+}
+
+delete {
+  url: {{baseUrl}}/public/v1/conversations/{{conversationUuid}}
+  body: none
+  auth: inherit
+}
+
+tests {
+  test("204 No Content", function () {
+    expect(res.getStatus()).to.equal(204);
+  });
+}
+
+docs {
+  DELETE /public/v1/conversations/{conversation_uuid}
+
+  Удаляет диалог. Ответ: 204 No Content.
+  Операция необратима — сообщения диалога тоже удаляются.
+}

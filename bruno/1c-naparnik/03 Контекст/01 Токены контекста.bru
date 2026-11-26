@@ -1,0 +1,31 @@
+meta {
+  name: 01. Токены контекста
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/public/v1/conversations/{{conversationUuid}}/context_tokens
+  body: none
+  auth: inherit
+}
+
+tests {
+  test("200 OK и token_count", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().token_count).to.be.a("number");
+  });
+}
+
+docs {
+  GET /public/v1/conversations/{conversation_uuid}/context_tokens
+
+  Query-параметр branch (опционально): по умолчанию latest; если указать
+  message_uuid — учитывается ветка диалога до этого сообщения.
+  При необходимости добавьте параметр branch вручную на вкладке Params.
+
+  Ответ: { "token_count": 1234, "max_context_length": 128000 }
+
+  Позволяет оценить заполненность контекста ДО отправки сообщения.
+  При приближении к max_context_length срабатывает серверная авто-компактизация.
+}

@@ -1,0 +1,39 @@
+meta {
+  name: 02. Компактизация контекста
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/public/v1/conversations/{{conversationUuid}}/compact
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "instruction": ""
+  }
+}
+
+tests {
+  test("200 OK и success", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().success).to.equal(true);
+  });
+}
+
+docs {
+  POST /public/v1/conversations/{conversation_uuid}/compact
+
+  Управляемая компактизация: синхронно запускает сжатие контекста
+  и ждёт завершения.
+
+  instruction — опциональные требования к сжатию на естественном языке.
+  Ответ: { success: true, result: { status: "compact_finished" } }
+  status: compact_finished | compact_limited
+
+  Внимание: сжатие меняет историю диалога, старые сообщения
+  в контексте уже не в полном виде.
+  Авто-компактизация выполняется сервером без участия клиента.
+}

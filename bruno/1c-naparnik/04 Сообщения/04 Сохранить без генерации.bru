@@ -1,0 +1,35 @@
+meta {
+  name: 04. Сохранить сообщение без генерации
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/public/v1/conversations/{{conversationUuid}}/messages
+  body: json
+  auth: inherit
+}
+
+headers {
+  Accept: text/event-stream
+}
+
+body:json {
+  {
+    "parent_uuid": null,
+    "role": "user",
+    "content": "Контекст проекта: конфигурация на БСП 3.1, режим совместимости 8.3.20.",
+    "no_generate": true
+  }
+}
+
+docs {
+  POST /public/v1/conversations/{conversation_uuid}/messages
+  no_generate: true
+
+  Сохраняет сообщение в диалог БЕЗ генерации ответа ассистента.
+  Удобно для затравки контекста (регламенты, описание проекта),
+  чтобы не тратить лимиты на ответ.
+
+  В потоке будет только эхо-пакет с uuid сохранённого сообщения.
+}

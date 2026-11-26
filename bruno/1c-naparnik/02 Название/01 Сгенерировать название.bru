@@ -1,0 +1,29 @@
+meta {
+  name: 01. Сгенерировать название
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/public/v1/conversations/{{conversationUuid}}/title
+  body: none
+  auth: inherit
+}
+
+tests {
+  test("200 OK и title", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().title).to.be.a("string");
+  });
+}
+
+docs {
+  POST /public/v1/conversations/{conversation_uuid}/title
+
+  Вызывается ПОСЛЕ генерации первого ответа ассистента.
+  Сервер генерирует название по содержимому диалога.
+  Первый вызов — генерация, последующие возвращают сохранённое название.
+  Тело запроса пустое. Ответ: { "title": "..." }
+
+  424 insufficient_context — информации мало, повторить после новых сообщений.
+}

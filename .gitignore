@@ -1,0 +1,22 @@
+# Сборка
+bin/
+*.exe
+*.exe~
+*.test
+
+# Данные и секреты: база, мастер-ключ, демо-стенд
+data/
+data-*/
+master.key
+*.db
+*.db-shm
+*.db-wal
+
+# Локальные конфиги (в репозиторий идёт только config.example.yaml)
+config.yaml
+config.test.yaml
+config.ui.yaml
+
+# Логи и временные файлы
+*.log
+.tmp-*
