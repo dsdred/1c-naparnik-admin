@@ -113,17 +113,33 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	defer sw.Close()
 
 	includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
-	var streamed strings.Builder
+	var streamed, streamedReasoning strings.Builder
+	// Первый чанк потока обязан нести роль: клиенты строят по нему сообщение.
+	roleSent := false
+	sendRole := func() {
+		if roleSent {
+			return
+		}
+		roleSent = true
+		sw.Event("", chunkJSON(req.Model, map[string]any{"role": "assistant", "content": ""}, nil, nil))
+	}
 	if streamMode == "deltas" {
 		input.OnText = func(text string) {
+			sendRole()
 			streamed.WriteString(text)
 			sw.Event("", chunkJSON(req.Model, map[string]any{"content": text}, nil, nil))
 		}
 		input.OnReasoning = func(text string) {
-			sw.Event("", chunkJSON(req.Model, map[string]any{"reasoning_content": text}, nil, nil))
+			sendRole()
+			streamedReasoning.WriteString(text)
+			sw.Event("", chunkJSON(req.Model, map[string]any{"reasoning_content": text, "reasoning": text}, nil, nil))
 		}
 	}
 	input.OnServerTool = func(string) { sw.Start() }
+	input.OnQueued = func() { sw.Start() }
+	// Поток открываем сразу, как только Напарник принял запрос: клиент видит
+	// начало ответа и получает пинги, пока модель думает.
+	input.OnStarted = func() { sendRole() }
 
 	reply, err := h.Engine.Execute(r.Context(), input)
 	if err != nil {
@@ -134,12 +150,12 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	h.logRequest(r, principal, req.Model, 200, "", reply, time.Since(started), true, gateway.LastUserText(turns))
 
-	// Первый чанк с ролью.
-	sw.Event("", chunkJSON(req.Model, map[string]any{"role": "assistant", "content": ""}, nil, nil))
+	// Первый чанк с ролью. В режиме deltas он уже ушёл перед первой дельтой.
+	sendRole()
 
 	if streamMode != "deltas" {
 		if r := reply.Reasoning(); r != "" {
-			sw.Event("", chunkJSON(req.Model, map[string]any{"reasoning_content": r}, nil, nil))
+			sw.Event("", chunkJSON(req.Model, map[string]any{"reasoning_content": r, "reasoning": r}, nil, nil))
 		}
 		if text := reply.Text(); text != "" {
 			sw.Event("", chunkJSON(req.Model, map[string]any{"content": text}, nil, nil))
@@ -148,6 +164,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// Дельты могут быть неполными: сервер вправе отфильтровать или поправить текст,
 		// и финальный content приоритетнее накопленных дельт. Досылаем недостающее,
 		// иначе клиент остаётся с обрезанным ответом.
+		if tail := streamTail(reply.Reasoning(), streamedReasoning.String()); tail != "" {
+			sw.Event("", chunkJSON(req.Model, map[string]any{"reasoning_content": tail, "reasoning": tail}, nil, nil))
+		}
 		if tail := streamTail(reply.Text(), streamed.String()); tail != "" {
 			sw.Event("", chunkJSON(req.Model, map[string]any{"content": tail}, nil, nil))
 		}
@@ -366,6 +385,8 @@ func buildCompletion(model string, reply *gateway.Reply) map[string]any {
 	// Cline, Roo Code, Kilo Code, OpenCode и другие OpenAI-совместимые клиенты.
 	if r := reply.Reasoning(); r != "" {
 		msg["reasoning_content"] = r
+		// Часть клиентов на AI SDK читает OpenRouter-поле reasoning.
+		msg["reasoning"] = r
 	}
 	if calls := reply.ToolCalls(); len(calls) > 0 {
 		out := make([]map[string]any, 0, len(calls))
