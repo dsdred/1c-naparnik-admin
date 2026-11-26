@@ -221,8 +221,17 @@ p:last-child { margin-bottom: 0; }
 
 .grid { display: grid; gap: 8px; margin-bottom: 8px; }
 .grid > .card { margin-bottom: 0; }
-.grid.cols2 { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.grid.cols2 { grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); }
 .grid.cols3 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+
+/* подраздел настроек: заголовок и подсказка внутри карточки */
+.settings-section { margin-bottom: 14px; }
+.settings-section h2 { margin: 0 0 4px; font-size: 15px; }
+.settings-section .hint { margin: 0 0 14px; line-height: 1.5; }
+.settings-section .grid { margin-bottom: 0; }
+.settings-section .grid.cols2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.settings-section label { margin-top: 2px; }
+.settings-section label.narrow { max-width: 420px; }
 
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .spacer { flex: 1; }
@@ -261,6 +270,13 @@ tbody tr { transition: background .1s ease; }
 tbody tr:hover { background: rgba(255, 255, 255, .022); }
 tr:last-child td { border-bottom: 0; }
 td.mono, .mono { font-family: var(--mono); font-size: 12.5px; }
+code {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, .07);
+}
 td:last-child, th:last-child { text-align: right; }
 
 /* ---------- формы ---------- */
@@ -549,6 +565,8 @@ pre {
   .nav button { width: 100%; }
 
   .main { padding: 18px 16px 48px; }
+
+  .settings-section .grid.cols2 { grid-template-columns: 1fr; }
 }
 
 /* переключатель «включён / выключен» */
@@ -694,6 +712,7 @@ svg.ico {
 [data-theme="light"] textarea,
 [data-theme="light"] .dd-btn { background: #ffffff; }
 [data-theme="light"] pre { background: #f4f6f9; }
+[data-theme="light"] code { background: rgba(20, 27, 37, .06); }
 [data-theme="light"] .bar { background: rgba(20, 27, 37, .08); }
 [data-theme="light"] button.btn.icon.danger:hover { color: #b3261e; }
 [data-theme="light"] .brand-mark { filter: none; }

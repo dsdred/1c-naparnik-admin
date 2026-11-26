@@ -1223,40 +1223,60 @@ async function renderSettings(main) {
   state.settings = s;
   main.innerHTML = `
     <h1>Настройки</h1>
-    <div class="card grid cols2">
-      <label>ID модели для подключения
-        <input id="s_model" value="${esc(s.model_id || 'naparnik')}" placeholder="naparnik">
-      </label>
-      <label>Режим потока по умолчанию
-        ${ddHTML('s_stream', [
-          { value: 'final', label: 'final — отдавать финальный текст' },
-          { value: 'deltas', label: 'deltas — по мере генерации' },
-        ], s.stream_mode)}
-      </label>
-      <label>Порог авто-компактизации
-        <input id="s_compact" type="number" step="0.05" min="0.1" max="1" value="${s.auto_compact_at}">
-      </label>
-      <label>TTL сессии
-        <input id="s_ttl" value="${esc(s.session_ttl)}">
-      </label>
-      <label>Таймаут запроса
-        <input id="s_timeout" value="${esc(s.request_timeout)}">
-      </label>
-      <label>Период опроса бюджета
-        <input id="s_poll" value="${esc(s.budget_poll_interval)}">
-      </label>
-      <label>Порог предупреждения, %
-        <input id="s_warn" type="number" min="1" max="99" value="${s.warn_percent}">
-      </label>
-      <label>Порог критический, %
-        <input id="s_crit" type="number" min="1" max="100" value="${s.crit_percent}">
-      </label>
-      <label>Webhook алертов
-        <input id="s_hook" value="${esc(s.alert_webhook || '')}" placeholder="https://...">
-      </label>
-    </div>
+
+    <section class="card settings-section">
+      <h2>Подключение</h2>
+      <p class="muted small hint">Имя модели, которое видят IDE в сниппетах и в <code>/v1/models</code>. В API Напарника не уходит — можно задать любое: латиница, цифры, <code>- _ . : /</code>.</p>
+      <div class="grid cols2">
+        <label class="narrow">ID модели для подключения
+          <input id="s_model" value="${esc(s.model_id || 'naparnik')}" placeholder="naparnik">
+        </label>
+      </div>
+    </section>
+
+    <section class="card settings-section">
+      <h2>Ответы и сессии</h2>
+      <p class="muted small hint">Как шлюз отдаёт текст клиенту и держит диалог с Напарником.</p>
+      <div class="grid cols2">
+        <label>Режим потока по умолчанию
+          ${ddHTML('s_stream', [
+            { value: 'final', label: 'final — отдавать финальный текст' },
+            { value: 'deltas', label: 'deltas — по мере генерации' },
+          ], s.stream_mode)}
+        </label>
+        <label>Порог авто-компактизации
+          <input id="s_compact" type="number" step="0.05" min="0.1" max="1" value="${s.auto_compact_at}">
+        </label>
+        <label>TTL сессии
+          <input id="s_ttl" value="${esc(s.session_ttl)}">
+        </label>
+        <label>Таймаут запроса
+          <input id="s_timeout" value="${esc(s.request_timeout)}">
+        </label>
+      </div>
+    </section>
+
+    <section class="card settings-section">
+      <h2>Мониторинг и алерты</h2>
+      <p class="muted small hint">Опрос бюджетов ключей и уведомления о расходе лимита.</p>
+      <div class="grid cols2">
+        <label>Период опроса бюджета
+          <input id="s_poll" value="${esc(s.budget_poll_interval)}">
+        </label>
+        <label>Порог предупреждения, %
+          <input id="s_warn" type="number" min="1" max="99" value="${s.warn_percent}">
+        </label>
+        <label>Порог критический, %
+          <input id="s_crit" type="number" min="1" max="100" value="${s.crit_percent}">
+        </label>
+        <label>Webhook алертов
+          <input id="s_hook" value="${esc(s.alert_webhook || '')}" placeholder="https://...">
+        </label>
+      </div>
+    </section>
+
     <div class="row"><button class="btn" onclick="saveSettings()">Сохранить</button></div>
-    <p class="muted small">ID модели — это имя, которое видят IDE в сниппетах и в <code>/v1/models</code>; в API Напарника оно не уходит. Часть настроек (таймаут запроса, период опроса) применится после перезапуска сервиса.</p>`;
+    <p class="muted small">Таймаут запроса и период опроса бюджета применяются после перезапуска сервиса.</p>`;
 }
 
 async function saveSettings() {
