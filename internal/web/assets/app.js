@@ -1511,39 +1511,151 @@ async function saveSettings() {
 
 /* ---------- подключение ---------- */
 
+// Клиенты для страницы «Подключение». Флаг verified ставим вручную после проверки
+// в самом клиенте: true — «Проверено», false — «Не проверено».
+const CONNECT_CLIENTS = [
+  {
+    id: 'openai',
+    name: 'Cline / Roo Code / Kilo Code',
+    note: 'Провайдер «OpenAI Compatible»',
+    verified: false,
+    text: (c) => `Provider: OpenAI Compatible
+Base URL: ${c.openai_url}
+API Key: <токен nr_...>
+Model: ${c.model}`,
+  },
+  {
+    id: 'continue',
+    name: 'Continue (VS Code, JetBrains)',
+    note: '~/.continue/config.yaml',
+    verified: false,
+    text: (c) => `models:
+  - name: Напарник
+    provider: openai
+    model: ${c.model}
+    apiBase: ${c.openai_url}
+    apiKey: <токен nr_...>`,
+  },
+  {
+    id: 'zed',
+    name: 'Zed',
+    note: 'settings.json',
+    verified: false,
+    text: (c) => `"language_models": {
+  "openai": {
+    "api_url": "${c.openai_url}",
+    "available_models": [
+      { "name": "${c.model}", "max_tokens": 32000 }
+    ]
+  }
+}`,
+  },
+  {
+    id: 'jetbrains',
+    name: 'JetBrains AI Assistant',
+    note: 'свой OpenAI-совместимый провайдер',
+    verified: false,
+    text: (c) => `Base URL: ${c.openai_url}
+API Key: <токен nr_...>
+Model: ${c.model}`,
+  },
+  {
+    id: 'claude',
+    name: 'Claude Code',
+    note: 'переменные окружения',
+    verified: false,
+    text: (c) => `export ANTHROPIC_BASE_URL=${c.anthropic_url}
+export ANTHROPIC_API_KEY=<токен nr_...>
+export ANTHROPIC_MODEL=${c.model}
+claude`,
+  },
+  {
+    id: 'codex',
+    name: 'Codex CLI',
+    note: '~/.codex/config.toml',
+    verified: false,
+    text: (c) => `model = "${c.model}"
+model_provider = "naparnik"
+
+[model_providers.naparnik]
+name = "Naparnik"
+base_url = "${c.openai_url}"
+env_key = "NAPARNIK_API_KEY"
+wire_api = "chat"`,
+  },
+  {
+    id: 'gemini',
+    name: 'Gemini CLI',
+    note: 'переменные окружения',
+    verified: false,
+    text: (c) => `export GOOGLE_GEMINI_BASE_URL=${c.gemini_url}
+export GEMINI_API_KEY=<токен nr_...>
+gemini --model ${c.model}`,
+  },
+  {
+    id: 'opencode',
+    name: 'OpenCode',
+    note: 'opencode.jsonc',
+    verified: false,
+    text: (c) => `{
+  "provider": {
+    "naparnik": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "${c.openai_url}",
+        "apiKey": "<токен nr_...>"
+      },
+      "models": { "${c.model}": { "name": "Напарник" } }
+    }
+  }
+}`,
+  },
+  {
+    id: 'curl',
+    name: 'Проверка через curl',
+    note: 'быстрый тест из консоли',
+    verified: false,
+    text: (c) => `curl ${c.openai_url}/chat/completions \\
+  -H "Authorization: Bearer <токен nr_...>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"${c.model}","messages":[{"role":"user","content":"Привет"}]}'`,
+  },
+];
+
+function connectBadge(ok) {
+  return ok
+    ? '<span class="badge ok">Проверено</span>'
+    : '<span class="badge">Не проверено</span>';
+}
+
+// copyConnect копирует инструкцию клиента с подставленными адресами.
+function copyConnect(id) {
+  const cl = CONNECT_CLIENTS.find((x) => x.id === id);
+  if (cl && state.connect) copy(cl.text(state.connect));
+}
+
 async function renderConnect(main) {
   const c = await api('/api/connect');
   state.connect = c;
-  const snippets = [
-    ['OpenAI-совместимые клиенты (Cline, Roo Code, Continue, Zed)',
-      `Provider: OpenAI Compatible
-Base URL: ${c.openai_url}
-API Key: <ваш токен nr_...>
-Model: ${c.model}`],
-    ['Claude Code',
-      `export ANTHROPIC_BASE_URL=${c.anthropic_url}
-export ANTHROPIC_API_KEY=<ваш токен nr_...>
-claude`],
-    ['Gemini CLI',
-      `export GOOGLE_GEMINI_BASE_URL=${c.gemini_url}
-export GEMINI_API_KEY=<ваш токен nr_...>
-gemini`],
-    ['Проверка через curl',
-      `curl ${c.openai_url}/chat/completions \\
-  -H "Authorization: Bearer <ваш токен>" \\
-  -H "Content-Type: application/json" \\
-  -d '{"model":"${c.model}","messages":[{"role":"user","content":"Привет"}]}'`],
-  ];
+  const done = CONNECT_CLIENTS.filter((x) => x.verified).length;
 
   main.innerHTML = `
-    <h1>Подключение ${infoBtn('Базовый адрес взят из первого gateway-слушателя. Токен выпускается в разделе «Токены».', 'Про подключение')}</h1>
-    ${snippets.map(([title, code]) => `
-      <div class="card">
-        <div class="row"><strong>${esc(title)}</strong><span class="spacer"></span>
-          <button class="btn ghost small" onclick="copy(${JSON.stringify(code).replace(/"/g, '&quot;')})">Копировать</button>
-        </div>
-        <pre>${esc(code)}</pre>
-      </div>`).join('')}`;
+    <h1>Подключение ${infoBtn('Базовый адрес взят из первого включённого gateway-слушателя. Токен выпускается в разделе «Токены». Значок «Проверено» ставится после реального подключения клиента.', 'Про подключение')}</h1>
+    <p class="muted small">Проверено: ${done} из ${CONNECT_CLIENTS.length}. Остальные инструкции рабочие, но в этих клиентах ещё не подтверждены.</p>
+    <div class="grid cols2">
+      ${CONNECT_CLIENTS.map((cl) => {
+        const code = cl.text(c);
+        return `<section class="card settings-section">
+          <div class="card-head">
+            <h2>${esc(cl.name)} ${connectBadge(cl.verified)}</h2>
+            <span class="spacer"></span>
+            ${iconBtn('copy', 'Копировать инструкцию', `copyConnect('${cl.id}')`)}
+          </div>
+          <div class="muted small" style="margin:-6px 0 6px">${esc(cl.note)}</div>
+          <pre>${esc(code)}</pre>
+        </section>`;
+      }).join('')}
+    </div>`;
 }
 
 /* ---------- старт ---------- */
