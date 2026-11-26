@@ -239,7 +239,10 @@ p:last-child { margin-bottom: 0; }
 /* ---------- карточки и сетки ---------- */
 
 .card {
-  background: linear-gradient(180deg, var(--panel) 0%, #182230 100%);
+  /* Фон не зависит от высоты карточки: раньше градиент растягивался на всю высоту,
+     и высокий список (например, токены) выглядел темнее остальных страниц. */
+  background: var(--panel);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, .04), rgba(255, 255, 255, 0) 140px);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 18px;
@@ -798,7 +801,10 @@ svg.ico {
   --shadow: 0 1px 2px rgba(20, 27, 37, .06), 0 10px 24px -18px rgba(20, 27, 37, .35);
 }
 
-[data-theme="light"] .card { background: linear-gradient(180deg, #ffffff 0%, #f7f9fc 100%); }
+[data-theme="light"] .card {
+  background: #ffffff;
+  background-image: linear-gradient(180deg, rgba(20, 27, 37, .02), rgba(20, 27, 37, 0) 140px);
+}
 [data-theme="light"] input,
 [data-theme="light"] select,
 [data-theme="light"] textarea,
