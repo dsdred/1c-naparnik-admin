@@ -214,6 +214,42 @@ async function copy(text) {
   }
 }
 
+// confirmDialog — подтверждение в стиле админки вместо нативного confirm().
+// Возвращает Promise<boolean>: true — «ОК», false — отмена/Esc/клик по фону.
+function confirmDialog({ title, text, ok, cancel, danger }) {
+  return new Promise((resolve) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'modal-backdrop';
+    wrap.innerHTML = `
+      <div class="modal" style="max-width:430px">
+        <h2 style="margin-top:0">${esc(title || 'Подтвердите действие')}</h2>
+        <p class="muted" style="margin:0 0 18px">${esc(text || '')}</p>
+        <div class="row" style="justify-content:flex-end">
+          <button class="btn ghost" data-act="cancel">${esc(cancel || 'Отмена')}</button>
+          <button class="btn ${danger ? 'danger' : ''}" data-act="ok">${esc(ok || 'Да')}</button>
+        </div>
+      </div>`;
+    const close = (val) => {
+      wrap.remove();
+      document.removeEventListener('keydown', onKey);
+      resolve(val);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); close(false); }
+      if (e.key === 'Enter') { e.preventDefault(); close(true); }
+    };
+    wrap.addEventListener('click', (e) => {
+      if (e.target === wrap) return close(false);
+      const act = e.target.closest('[data-act]');
+      if (act) close(act.dataset.act === 'ok');
+    });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(wrap);
+    const okBtn = wrap.querySelector('[data-act="ok"]');
+    if (okBtn) okBtn.focus();
+  });
+}
+
 /* ---------- запуск ---------- */
 
 async function boot() {
@@ -522,7 +558,13 @@ async function toggleKey(id, disabled) {
 }
 
 async function deleteKey(id) {
-  if (!confirm('Удалить ключ вместе с его токенами и сессиями?')) return;
+  const ok = await confirmDialog({
+    title: 'Удалить ключ?',
+    text: 'Ключ удалится вместе с его токенами, сессиями и историей квоты. Отключить без удаления можно через диалог ключа.',
+    ok: 'Удалить',
+    danger: true,
+  });
+  if (!ok) return;
   try {
     await api('/api/keys/' + id, { method: 'DELETE' });
     toast('Ключ удалён');
@@ -804,7 +846,13 @@ async function toggleToken(id, enabled) {
 }
 
 async function revokeToken(id) {
-  if (!confirm('Отозвать токен? IDE перестанет подключаться.')) return;
+  const ok = await confirmDialog({
+    title: 'Отозвать токен?',
+    text: 'IDE перестанет подключаться с этим токеном. Вернуть его нельзя — только выпустить новый или «Сгенерировать новый» в диалоге.',
+    ok: 'Отозвать',
+    danger: true,
+  });
+  if (!ok) return;
   try {
     await api('/api/tokens/' + id + '/revoke', { method: 'POST' });
     go('tokens');
@@ -888,7 +936,12 @@ function copyTokenField() {
 }
 
 async function rotateTokenField(id) {
-  if (!confirm('Сгенерировать новый токен? Старое значение сразу перестанет работать, а токен снова станет активным. Настройки (ключ, провайдер, поток) сохранятся.')) return;
+  const ok = await confirmDialog({
+    title: 'Сгенерировать новый токен?',
+    text: 'Старое значение сразу перестанет работать, токен снова станет активным. Ключ, провайдер и поток сохранятся.',
+    ok: 'Сгенерировать',
+  });
+  if (!ok) return;
   try {
     const res = await api('/api/tokens/' + id + '/rotate', { method: 'POST' });
     const input = document.getElementById('te_token');
