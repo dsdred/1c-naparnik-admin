@@ -31,3 +31,6 @@ screens/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Резервные копии при сбросе пароля
+.reset-backup/
