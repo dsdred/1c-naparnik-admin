@@ -1429,7 +1429,7 @@ async function renderSettings(main) {
     </section>
 
     <section class="card settings-section">
-      <h2>Ответы и сессии ${infoBtn('Как шлюз отдаёт текст клиенту и держит диалог с Напарником. Таймаут запроса применяется после перезапуска сервиса.', 'Про ответы и сессии')}</h2>
+      <h2>Ответы и сессии ${infoBtn('Как шлюз отдаёт текст клиенту и держит диалог с Напарником. Длительности вводятся числом с единицей: 30s, 5m, 2h. Таймаут запроса применяется после перезапуска сервиса.', 'Про ответы и сессии')}</h2>
       <div class="grid cols2">
         <label>Режим потока по умолчанию
           ${ddHTML('s_stream', [
@@ -1441,19 +1441,22 @@ async function renderSettings(main) {
           <input id="s_compact" type="number" step="0.05" min="0.1" max="1" value="${s.auto_compact_at}">
         </label>
         <label>TTL сессии
-          <input id="s_ttl" value="${esc(s.session_ttl)}">
+          <input id="s_ttl" value="${esc(s.session_ttl)}" placeholder="например, 2h"
+            title="Число с единицей: 30s, 5m, 2h" oninput="this.classList.remove('invalid')">
         </label>
         <label>Таймаут запроса
-          <input id="s_timeout" value="${esc(s.request_timeout)}">
+          <input id="s_timeout" value="${esc(s.request_timeout)}" placeholder="например, 10m"
+            title="Число с единицей: 30s, 5m, 2h" oninput="this.classList.remove('invalid')">
         </label>
       </div>
     </section>
 
     <section class="card settings-section">
-      <h2>Мониторинг и алерты ${infoBtn('Опрос бюджетов ключей и уведомления о расходе лимита. Период опроса применяется после перезапуска сервиса.', 'Про мониторинг')}</h2>
+      <h2>Мониторинг и алерты ${infoBtn('Опрос бюджетов ключей и уведомления о расходе лимита. Период вводится числом с единицей: 30s, 5m, 1h (минимум 30s). Применяется после перезапуска сервиса.', 'Про мониторинг')}</h2>
       <div class="grid cols2">
         <label>Период опроса бюджета
-          <input id="s_poll" value="${esc(s.budget_poll_interval)}">
+          <input id="s_poll" value="${esc(s.budget_poll_interval)}" placeholder="например, 5m"
+            title="Число с единицей: 30s, 5m, 1h" oninput="this.classList.remove('invalid')">
         </label>
         <label>Порог предупреждения, %
           <input id="s_warn" type="number" min="1" max="99" value="${s.warn_percent}">
@@ -1471,6 +1474,22 @@ async function renderSettings(main) {
 }
 
 async function saveSettings() {
+  // Длительности вводятся числом с единицей: 30s, 5m, 2h.
+  const durationRe = /^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$/;
+  for (const [id, name] of [
+    ['s_ttl', 'TTL сессии'],
+    ['s_timeout', 'Таймаут запроса'],
+    ['s_poll', 'Период опроса бюджета'],
+  ]) {
+    const el = document.getElementById(id);
+    const valid = durationRe.test(el.value.trim());
+    el.classList.toggle('invalid', !valid);
+    if (!valid) {
+      el.focus();
+      return toast(name + ': укажите число с единицей, например 5m', true);
+    }
+  }
+
   const body = {
     model_id: document.getElementById('s_model').value.trim(),
     stream_mode: ddValue('s_stream'),

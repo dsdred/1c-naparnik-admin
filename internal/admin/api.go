@@ -863,6 +863,23 @@ func normalizeModelID(raw string) (string, error) {
 	return id, nil
 }
 
+// parseDurationSetting разбирает длительность из настроек: «30s», «5m», «2h».
+// Пустое значение означает «не менять» и возвращает ok=false.
+func parseDurationSetting(name, raw string, min time.Duration) (config.Duration, bool, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, false, fmt.Errorf("%s: неверный формат «%s». Укажите число с единицей: 30s, 5m, 2h", name, raw)
+	}
+	if d < min {
+		return 0, false, fmt.Errorf("%s: слишком мало, минимум %s", name, min)
+	}
+	return config.Duration(d), true, nil
+}
+
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, settingsView{
 		ModelID:            s.Cfg.ModelName(),
@@ -898,14 +915,23 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if req.AutoCompactAt > 0 && req.AutoCompactAt <= 1 {
 		s.Cfg.AutoCompactAt = req.AutoCompactAt
 	}
-	if d, err := time.ParseDuration(req.SessionTTL); err == nil {
-		s.Cfg.SessionTTL = config.Duration(d)
+	if v, ok, err := parseDurationSetting("TTL сессии", req.SessionTTL, time.Second); err != nil {
+		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	} else if ok {
+		s.Cfg.SessionTTL = v
 	}
-	if d, err := time.ParseDuration(req.RequestTimeout); err == nil {
-		s.Cfg.RequestTimeout = config.Duration(d)
+	if v, ok, err := parseDurationSetting("Таймаут запроса", req.RequestTimeout, time.Second); err != nil {
+		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	} else if ok {
+		s.Cfg.RequestTimeout = v
 	}
-	if d, err := time.ParseDuration(req.BudgetPollInterval); err == nil && d >= 30*time.Second {
-		s.Cfg.BudgetPollInterval = config.Duration(d)
+	if v, ok, err := parseDurationSetting("Период опроса бюджета", req.BudgetPollInterval, 30*time.Second); err != nil {
+		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	} else if ok {
+		s.Cfg.BudgetPollInterval = v
 	}
 	if req.WarnPercent > 0 && req.WarnPercent < 100 {
 		s.Cfg.WarnPercent = req.WarnPercent

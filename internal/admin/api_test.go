@@ -132,3 +132,19 @@ func TestExportLogsCSV(t *testing.T) {
 		t.Fatalf("в CSV нет данных запроса: %q", text)
 	}
 }
+
+func TestParseDurationSetting(t *testing.T) {
+	if _, ok, err := parseDurationSetting("X", "   ", time.Second); err != nil || ok {
+		t.Fatalf("пустое значение должно означать «не менять»: ok=%v err=%v", ok, err)
+	}
+	v, ok, err := parseDurationSetting("X", "5m", 30*time.Second)
+	if err != nil || !ok || v.D() != 5*time.Minute {
+		t.Fatalf("5m: v=%v ok=%v err=%v", v, ok, err)
+	}
+	if _, _, err := parseDurationSetting("X", "каждые 5 минут", time.Second); err == nil {
+		t.Fatal("текст без единицы должен отклоняться")
+	}
+	if _, _, err := parseDurationSetting("X", "5s", 30*time.Second); err == nil {
+		t.Fatal("значение меньше минимума должно отклоняться")
+	}
+}
