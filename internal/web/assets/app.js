@@ -12,6 +12,8 @@ const state = {
   view: 'overview',
   keyID: null,
   usageRange: '24h',
+  logOffset: 0,
+  logTotal: 0,
 };
 
 const app = document.getElementById('app');
@@ -629,6 +631,8 @@ const ACTION_ICONS = {
   revoke: '<circle cx="12" cy="12" r="8"/><path d="M6.4 17.6L17.6 6.4"/>',
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5h10"/>',
   download: '<path d="M12 4v10"/><path d="M8 11l4 4 4-4"/><path d="M5 19h14"/>',
+  prev: '<path d="M14.5 5l-7 7 7 7"/>',
+  next: '<path d="M9.5 5l7 7-7 7"/>',
   eye: '<path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="3"/>',
   rotate: '<path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 3.5V9h-5.5"/>',
   deltas: '<path d="M4 12h2.5M10.75 12h2.5M17.5 12H20"/>',
@@ -636,8 +640,9 @@ const ACTION_ICONS = {
   auto: '<path d="M7 8h9"/><path d="M13 5l3 3-3 3"/><path d="M17 16H8"/><path d="M11 13l-3 3 3 3"/>',
 };
 
-function iconBtn(name, title, onclick, cls) {
-  return `<button class="btn icon ghost ${cls || ''}" title="${esc(title)}" aria-label="${esc(title)}" onclick="${onclick}">
+function iconBtn(name, title, onclick, cls, disabled) {
+  const act = disabled ? 'disabled' : `onclick="${onclick}"`;
+  return `<button class="btn icon ghost ${cls || ''}" title="${esc(title)}" aria-label="${esc(title)}" ${act}>
     <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ACTION_ICONS[name] || ''}</svg>
   </button>`;
 }
@@ -1152,34 +1157,56 @@ async function resetSession(tokenID, protocol, sessionID) {
 
 /* ---------- журнал ---------- */
 
+const LOG_PAGE_SIZE = 50;
+
 async function renderLogs(main) {
   const [keys, tokens] = await Promise.all([api('/api/keys'), api('/api/tokens')]);
-  const res = await api('/api/logs?limit=100');
+  const size = LOG_PAGE_SIZE;
+  if (state.logOffset < 0) state.logOffset = 0;
+  const res = await api(`/api/logs?limit=${size}&offset=${state.logOffset}`);
+  state.logTotal = res.total;
+  // После очистки текущая страница могла оказаться за пределами журнала.
+  if (res.total > 0 && state.logOffset >= res.total) {
+    state.logOffset = Math.floor((res.total - 1) / size) * size;
+    return renderLogs(main);
+  }
+  if (res.total === 0) state.logOffset = 0;
+
   const tokenName = (id) => (tokens.find((t) => t.id === id) || {}).name || ('#' + id);
   const cut = (s, n) => {
     const t = String(s || '');
     return t.length > n ? t.slice(0, n - 1) + '…' : t;
   };
+  const from = res.total ? state.logOffset + 1 : 0;
+  const to = state.logOffset + res.entries.length;
+  const prevOff = iconBtn('prev', 'Предыдущая страница', 'logsPage(-1)', '', state.logOffset <= 0);
+  const nextOff = iconBtn('next', 'Следующая страница', 'logsPage(1)', '', to >= res.total);
 
   main.innerHTML = `
     <h1>Журнал запросов ${infoBtn('Что именно спрашивали пользователи: последняя реплика каждого запроса, до 2000 символов.', 'Про журнал')}</h1>
 
     <section class="card settings-section">
-      <h2>Хранение и выгрузка ${infoBtn('Записи старше указанного числа дней удаляются безвозвратно; 0 — удалить весь журнал. Выгрузка — CSV, открывается в Excel.', 'Про хранение и выгрузку')}</h2>
-      <div class="row">
+      <div class="card-head">
+        <h2>Хранение и выгрузка ${infoBtn('Записи старше указанного числа дней удаляются безвозвратно; 0 — удалить весь журнал. Выгрузка — CSV, открывается в Excel.', 'Про хранение и выгрузку')}</h2>
+        <span class="spacer"></span>
         <label class="inline-label">Удалить записи старше
           <input id="log-days" type="number" min="0" max="3650" step="1" value="30" style="width:88px;margin-top:0">
           дней
         </label>
-        <span class="spacer"></span>
         ${iconBtn('download', 'Выгрузить журнал в CSV', 'exportLogs()')}
         ${iconBtn('trash', 'Удалить записи', 'purgeLogs()', 'danger')}
       </div>
     </section>
 
     <section class="card settings-section">
-      <h2>Записи ${infoBtn('Показаны последние 100 записей. Выгрузка в CSV отдаёт весь журнал.', 'Про список записей')}</h2>
-      <div class="row small muted" style="margin-bottom:10px">Всего записей: ${fmtNum(res.total)}</div>
+      <div class="card-head">
+        <h2>Записи ${infoBtn('Страница показывает 50 записей. Выгрузка в CSV отдаёт весь журнал.', 'Про список записей')}</h2>
+        <span class="muted small">Всего записей: ${fmtNum(res.total)}</span>
+        <span class="spacer"></span>
+        ${res.total ? `<span class="muted small">${fmtNum(from)}–${fmtNum(to)} из ${fmtNum(res.total)}</span>` : ''}
+        ${prevOff}
+        ${nextOff}
+      </div>
       <table>
         <thead><tr><th>Время</th><th>Токен</th><th>Запрос</th><th>Протокол</th><th>Статус</th><th>Токены</th><th>мс</th></tr></thead>
         <tbody>
@@ -1199,6 +1226,18 @@ async function renderLogs(main) {
         </tbody>
       </table>
     </section>`;
+}
+
+// logsPage переключает страницу журнала: -1 — назад, 1 — вперёд.
+function logsPage(delta) {
+  const size = LOG_PAGE_SIZE;
+  let off = state.logOffset + delta * size;
+  if (off < 0) off = 0;
+  if (state.logTotal > 0 && off >= state.logTotal) {
+    off = Math.floor((state.logTotal - 1) / size) * size;
+  }
+  state.logOffset = off;
+  go('logs');
 }
 
 // exportLogs скачивает журнал файлом CSV: сервер отдаёт его вложением.
@@ -1228,6 +1267,7 @@ async function purgeLogs() {
   try {
     const r = await api('/api/logs/purge', { method: 'POST', body: { days } });
     toast('Удалено записей: ' + fmtNum(r.deleted));
+    state.logOffset = 0;
     go('logs');
   } catch (e) { toast(e.message, true); }
 }

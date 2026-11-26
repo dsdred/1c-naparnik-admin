@@ -260,6 +260,11 @@ p:last-child { margin-bottom: 0; }
 .settings-section label { margin-top: 2px; }
 .settings-section label.narrow { max-width: 420px; }
 
+/* заголовок карточки в одну строку с действиями */
+.card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.card-head h2 { margin: 0; }
+.card-head .inline-label { margin: 0; }
+
 /* значок «i» с всплывающим пояснением: подсказки не занимают место на странице */
 .info-wrap { position: relative; display: inline-flex; align-items: center; vertical-align: middle; }
 
