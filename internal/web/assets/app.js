@@ -533,12 +533,31 @@ const ACTION_ICONS = {
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5h10"/>',
   eye: '<path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="3"/>',
   rotate: '<path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 3.5V9h-5.5"/>',
+  deltas: '<path d="M4 12h2.5M10.75 12h2.5M17.5 12H20"/>',
+  final: '<rect x="4" y="7" width="16" height="10" rx="2" fill="currentColor" stroke="none" opacity=".45"/><rect x="4" y="7" width="16" height="10" rx="2"/>',
+  auto: '<path d="M7 8h9"/><path d="M13 5l3 3-3 3"/><path d="M17 16H8"/><path d="M11 13l-3 3 3 3"/>',
 };
 
 function iconBtn(name, title, onclick, cls) {
   return `<button class="btn icon ghost ${cls || ''}" title="${esc(title)}" aria-label="${esc(title)}" onclick="${onclick}">
     <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ACTION_ICONS[name] || ''}</svg>
   </button>`;
+}
+
+// iconSvg — та же иконка, но без кнопки: для ячеек таблиц.
+function iconSvg(name) {
+  return `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ACTION_ICONS[name] || ''}</svg>`;
+}
+
+// streamIcon — режим потока картинкой: пунктир (по кускам), блок (целиком), стрелки (по умолчанию).
+function streamIcon(mode) {
+  if (mode === 'deltas') {
+    return `<span title="deltas — текст приходит по мере генерации">${iconSvg('deltas')}</span>`;
+  }
+  if (mode === 'final') {
+    return `<span title="final — ответ приходит целиком в конце">${iconSvg('final')}</span>`;
+  }
+  return `<span title="как в настройках шлюза">${iconSvg('auto')}</span>`;
 }
 
 async function addKey() {
@@ -805,7 +824,7 @@ async function renderTokens(main) {
     </div>
     <div class="card">
       <table>
-        <thead><tr><th style="width:20px"></th><th>Название</th><th>Ключ</th><th>Провайдер</th><th>Префикс</th><th>Поток</th><th>Последний</th><th></th></tr></thead>
+        <thead><tr><th style="width:20px"></th><th>Название</th><th>Ключ</th><th>Провайдер</th><th>Поток</th><th>Последний</th><th></th></tr></thead>
         <tbody>
           ${tokens.map((t) => {
             const dot = t.revoked_at
@@ -817,8 +836,7 @@ async function renderTokens(main) {
             <td class="small muted">${esc(keyName(t.key_id))}<br>
               <span class="mono" style="font-size:11.5px;color:var(--muted-2)">${esc(keyHint(t.key_id))}</span></td>
             <td class="small muted">${esc(providerLabel(t.provider))}</td>
-            <td class="mono small" title="Первые символы токена — по ним токен находится в базе. Полное значение показывается один раз при выпуске.">${esc(t.prefix)}…</td>
-            <td class="small muted">${esc(t.stream_mode || 'по умолчанию')}</td>
+            <td>${streamIcon(t.stream_mode)}</td>
             <td class="small muted">${fmtTime(t.last_used_at)}</td>
             <td class="actions">
               ${t.secret_available ? iconBtn('copy', 'Скопировать токен — можно передать сотруднику', `copyToken(${t.id})`) : ''}
@@ -827,7 +845,7 @@ async function renderTokens(main) {
               ${iconBtn('revoke', 'Отозвать — IDE перестанет подключаться', `revokeToken(${t.id})`, 'danger')}
             </td>
           </tr>`;
-          }).join('') || '<tr><td colspan="8" class="muted">Пока нет токенов</td></tr>'}
+          }).join('') || '<tr><td colspan="7" class="muted">Пока нет токенов</td></tr>'}
         </tbody>
       </table>
     </div>`;

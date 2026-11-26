@@ -516,9 +516,17 @@ pre {
   color: var(--muted);
 }
 
+/* иконка внутри ячейки таблицы (не кнопка) */
+svg.ico {
+  width: 16px;
+  height: 16px;
+  stroke: var(--muted);
+  fill: none;
+  vertical-align: -3px;
+}
+
 /* точка статуса в списках */
-.dot {
-  display: inline-block;
+.dot {  display: inline-block;
   width: 9px;
   height: 9px;
   border-radius: 50%;
