@@ -23,6 +23,9 @@ func Handler() http.Handler {
 	fsys := FS()
 	fileServer := http.FileServer(http.FS(fsys))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Интерфейс вшит в бинарник и меняется вместе с ним: без этого браузер
+		// держит старые app.js и style.css и показывает устаревшую вёрстку.
+		w.Header().Set("Cache-Control", "no-cache")
 		if r.URL.Path != "/" {
 			if f, err := fsys.Open(trimSlash(r.URL.Path)); err == nil {
 				_ = f.Close()
