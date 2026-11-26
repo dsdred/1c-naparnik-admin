@@ -268,6 +268,10 @@ p:last-child { margin-bottom: 0; }
 .card-head h2 { margin: 0; }
 .card-head .inline-label { margin: 0; }
 
+/* компактная карточка: одна строка управления, без лишнего воздуха */
+.card-compact { padding: 10px 16px; }
+.card-compact .card-head { margin-bottom: 0; }
+
 /* значок «i» с всплывающим пояснением: подсказки не занимают место на странице */
 .info-wrap { position: relative; display: inline-flex; align-items: center; vertical-align: middle; }
 

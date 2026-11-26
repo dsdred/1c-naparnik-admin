@@ -1189,7 +1189,7 @@ async function renderLogs(main) {
   main.innerHTML = `
     <h1>Журнал запросов ${infoBtn('Что именно спрашивали пользователи: последняя реплика каждого запроса, до 2000 символов.', 'Про журнал')}</h1>
 
-    <section class="card settings-section">
+    <section class="card settings-section card-compact">
       <div class="card-head">
         <h2>Хранение и выгрузка ${infoBtn('Записи старше указанного числа дней удаляются безвозвратно; 0 — удалить весь журнал. Выгрузка — CSV, открывается в Excel.', 'Про хранение и выгрузку')}</h2>
         <span class="spacer"></span>
