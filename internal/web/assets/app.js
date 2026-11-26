@@ -484,6 +484,8 @@ const ACTION_ICONS = {
   trash: '<path d="M4 7h16"/><path d="M9 7V5h6v2"/><path d="M6 7l1 13h10l1-13"/>',
   revoke: '<circle cx="12" cy="12" r="8"/><path d="M6.4 17.6L17.6 6.4"/>',
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5h10"/>',
+  eye: '<path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="3"/>',
+  rotate: '<path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 3.5V9h-5.5"/>',
 };
 
 function iconBtn(name, title, onclick, cls) {
@@ -553,7 +555,7 @@ async function openKeyEdit(id) {
         <label>Ключ Напарника
           <div class="row" style="gap:6px;flex-wrap:nowrap">
             <input id="e_key" class="mono" value="${esc(secret || k.key_hint)}" style="flex:1" ${secret ? '' : 'readonly'}>
-            <button class="btn ghost small" onclick="copyKeyField()">Копировать</button>
+            ${iconBtn('copy', 'Копировать ключ', 'copyKeyField()')}
           </div>
         </label>
         <p class="muted small" style="margin:0">Измените значение и сохраните — ключ заменится. Маску ключа в списке
@@ -842,11 +844,11 @@ function openTokenEdit(id) {
         ], t.enabled ? '1' : '0', '')}</label>
       </div>
       <label style="display:block;margin-top:14px">Токен
-        <div class="row">
+        <div class="row" style="gap:6px;flex-wrap:nowrap">
           <input id="te_token" readonly value="" placeholder="${t.secret_available ? 'нажмите «Показать», чтобы получить значение' : 'значение не сохранено — выпущен до этой версии'}" style="flex:1;min-width:200px">
-          <button class="btn ghost" onclick="revealTokenField(${t.id})">Показать</button>
-          <button class="btn ghost" onclick="copy(document.getElementById('te_token').value)">Копировать</button>
-          <button class="btn ghost" onclick="rotateTokenField(${t.id})">Сгенерировать новый</button>
+          ${iconBtn('eye', 'Показать значение', `revealTokenField(${t.id})`)}
+          ${iconBtn('copy', 'Копировать значение', 'copyTokenField()')}
+          ${iconBtn('rotate', 'Сгенерировать новый токен — старое значение перестанет работать', `rotateTokenField(${t.id})`)}
         </div>
       </label>
       <p class="muted small">Префикс <span class="mono" id="te_prefix">${esc(t.prefix)}…</span> · создан ${fmtTime(t.created_at)}
@@ -867,6 +869,12 @@ async function revealTokenField(id) {
     const input = document.getElementById('te_token');
     if (input) input.value = res.token;
   } catch (e) { toast(e.message, true); }
+}
+
+function copyTokenField() {
+  const input = document.getElementById('te_token');
+  if (!input || !input.value) return toast('Сначала нажмите «Показать»', true);
+  copy(input.value);
 }
 
 async function rotateTokenField(id) {
