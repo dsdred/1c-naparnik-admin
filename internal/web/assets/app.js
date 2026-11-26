@@ -1515,8 +1515,18 @@ async function saveSettings() {
 // в самом клиенте: true — «Проверено», false — «Не проверено».
 const CONNECT_CLIENTS = [
   {
-    id: 'openai',
-    name: 'Cline / Roo Code / Kilo Code',
+    id: 'cline',
+    name: 'Cline',
+    note: 'Провайдер «OpenAI Compatible»',
+    verified: true,
+    text: (c) => `Provider: OpenAI Compatible
+Base URL: ${c.openai_url}
+API Key: <токен nr_...>
+Model: ${c.model}`,
+  },
+  {
+    id: 'roo',
+    name: 'Roo Code / Kilo Code',
     note: 'Провайдер «OpenAI Compatible»',
     verified: false,
     text: (c) => `Provider: OpenAI Compatible
