@@ -115,3 +115,18 @@ func TestBuildCompletionReasoning(t *testing.T) {
 		t.Fatalf("content: %v", msg["content"])
 	}
 }
+
+func TestStreamTail(t *testing.T) {
+	cases := []struct{ full, sent, want string }{
+		{"привет", "привет", ""},
+		{"привет мир", "привет", " мир"},
+		{"привет", "", "привет"},
+		{"новый текст", "старый", "новый текст"},
+		{"", "что-то", ""},
+	}
+	for _, c := range cases {
+		if got := streamTail(c.full, c.sent); got != c.want {
+			t.Fatalf("streamTail(%q,%q) = %q, want %q", c.full, c.sent, got, c.want)
+		}
+	}
+}

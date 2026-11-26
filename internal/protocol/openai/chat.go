@@ -113,8 +113,10 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	defer sw.Close()
 
 	includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
+	var streamed strings.Builder
 	if streamMode == "deltas" {
 		input.OnText = func(text string) {
+			streamed.WriteString(text)
 			sw.Event("", chunkJSON(req.Model, map[string]any{"content": text}, nil, nil))
 		}
 		input.OnReasoning = func(text string) {
@@ -141,6 +143,13 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		if text := reply.Text(); text != "" {
 			sw.Event("", chunkJSON(req.Model, map[string]any{"content": text}, nil, nil))
+		}
+	} else {
+		// Дельты могут быть неполными: сервер вправе отфильтровать или поправить текст,
+		// и финальный content приоритетнее накопленных дельт. Досылаем недостающее,
+		// иначе клиент остаётся с обрезанным ответом.
+		if tail := streamTail(reply.Text(), streamed.String()); tail != "" {
+			sw.Event("", chunkJSON(req.Model, map[string]any{"content": tail}, nil, nil))
 		}
 	}
 	if calls := reply.ToolCalls(); len(calls) > 0 {
@@ -333,6 +342,22 @@ func contentText(raw json.RawMessage) (string, bool, error) {
 		}
 	}
 	return b.String(), hasMedia, nil
+}
+
+// streamTail возвращает кусок финального текста, которого не было в дельтах.
+// Напарник вправе отфильтровать или поправить текст, поэтому финальный content
+// приоритетнее накопленных дельт.
+func streamTail(full, sent string) string {
+	switch {
+	case full == "" || full == sent:
+		return ""
+	case sent == "":
+		return full
+	case strings.HasPrefix(full, sent):
+		return full[len(sent):]
+	default:
+		return full
+	}
 }
 
 func buildCompletion(model string, reply *gateway.Reply) map[string]any {
