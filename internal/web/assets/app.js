@@ -266,8 +266,43 @@ function closeNav() {
 }
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') closeNav();
+  if (e.key === 'Escape') { closeNav(); closeInfo(); }
 });
+
+// Клик мимо значка «i» закрывает пояснение.
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.info-wrap')) closeInfo();
+});
+
+// infoBtn — значок «i» с всплывающим пояснением: подсказки не занимают место на странице.
+function infoBtn(html, label) {
+  const title = esc(label || 'Пояснение');
+  return `<span class="info-wrap">
+    <button type="button" class="info-btn" aria-label="${title}" aria-expanded="false" onclick="toggleInfo(event)">i</button>
+    <span class="info-pop" role="tooltip" hidden>${html}</span>
+  </span>`;
+}
+
+// closeInfo закрывает все подсказки, кроме указанной.
+function closeInfo(except) {
+  document.querySelectorAll('.info-pop').forEach((pop) => {
+    if (pop === except) return;
+    pop.hidden = true;
+    const btn = pop.parentElement.querySelector('.info-btn');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  });
+}
+
+function toggleInfo(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  const btn = e.currentTarget;
+  const pop = btn.closest('.info-wrap').querySelector('.info-pop');
+  const willOpen = pop.hidden;
+  closeInfo(pop);
+  pop.hidden = !willOpen;
+  btn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+}
 
 // confirmDialog — подтверждение в стиле админки вместо нативного confirm().
 // Возвращает Promise<boolean>: true — «ОК», false — отмена/Esc/клик по фону.
@@ -676,7 +711,7 @@ async function openKeyEdit(id) {
   wrap.innerHTML = `
     <div class="modal">
       <div class="row" style="align-items:center;margin-bottom:14px">
-        <h2 style="margin:0">Изменить ключ</h2>
+        <h2 style="margin:0">Изменить ключ ${infoBtn('Измените значение ключа и сохраните — ключ заменится. Маску ключа в списке увидите, если не удалось его расшифровать. При доступе к админке по сети нужен HTTPS.', 'Про изменение ключа')}</h2>
         <span class="spacer"></span>
         <label class="switch" title="Включить или отключить ключ — шлюз перестанет отдавать его токенам">
           <input type="checkbox" id="e_enabled" ${k.disabled ? '' : 'checked'}>
@@ -696,8 +731,6 @@ async function openKeyEdit(id) {
       </div>
       <p class="muted small" style="margin:14px 0 0">Статус: ${esc(keyStatusText(k))} · токенов ${tokenCount}
         · создан ${fmtTime(k.created_at)}</p>
-      <p class="muted small" style="margin:6px 0 0">Измените значение ключа и сохраните — ключ заменится. Маску ключа
-        в списке увидите, если не удалось его расшифровать. При доступе к админке по сети нужен HTTPS.</p>
       <div class="row" style="justify-content:flex-end;margin-top:18px">
         <button class="btn ghost" onclick="closeKeyEdit()">Отмена</button>
         <button class="btn" onclick="saveKeyEdit(${k.id})">Сохранить</button>
@@ -862,7 +895,7 @@ async function renderTokens(main) {
   main.innerHTML = `
     <h1>Токены для IDE</h1>
     <div class="card">
-      <h3>Выпустить токен</h3>
+      <h3>Выпустить токен ${infoBtn('Один ключ Напарника может иметь сколько угодно токенов — по одному на IDE или разработчика.', 'Про токены')}</h3>
       <div class="row">
         ${ddHTML('tkey', keys.map((k) => ({ value: String(k.id), label: k.name + ' · ' + k.key_hint })), keys[0] ? String(keys[0].id) : '', 'flex:1.4;min-width:220px')}
         <input id="tname" placeholder="Название (например, «Cline, ноутбук»)" style="flex:2;min-width:200px">
@@ -874,7 +907,6 @@ async function renderTokens(main) {
         ], '', 'flex:1;min-width:200px')}
         <button class="btn" onclick="addToken()">Выпустить</button>
       </div>
-      <p class="muted small" style="margin-bottom:0">Один ключ Напарника может иметь сколько угодно токенов — по одному на IDE или разработчика.</p>
     </div>
     <div class="card">
       <table>
@@ -1080,8 +1112,7 @@ async function renderSessions(main) {
   const tokenName = (id) => (tokens.find((t) => t.id === id) || {}).name || ('#' + id);
 
   main.innerHTML = `
-    <h1>Сессии</h1>
-    <p class="muted small">Привязка клиентской сессии к диалогу Напарника. Сброс создаёт новый диалог при следующем запросе.</p>
+    <h1>Сессии ${infoBtn('Привязка клиентской сессии к диалогу Напарника. Сброс создаёт новый диалог при следующем запросе.', 'Про сессии')}</h1>
     <div class="card">
       <table>
         <thead><tr><th>Токен</th><th>Протокол</th><th>Сессия</th><th>Диалог</th><th>Обновлена</th><th></th></tr></thead>
@@ -1148,9 +1179,7 @@ async function renderListeners(main) {
 
 function paintListeners(main) {
   main.innerHTML = `
-    <h1>Слушатели</h1>
-    <p class="muted small">Можно слушать несколько портов одновременно. Для доступа из локальной сети укажите 0.0.0.0:порт.
-    Админку держите на 127.0.0.1, если не нужен удалённый доступ.</p>
+    <h1>Слушатели ${infoBtn('Можно слушать несколько портов одновременно. Для доступа из локальной сети укажите 0.0.0.0:порт. Админку держите на 127.0.0.1, если не нужен удалённый доступ.', 'Про слушателей')}</h1>
     <div class="card">
       <table>
         <thead><tr><th>Адрес</th><th>Тип</th><th></th></tr></thead>
@@ -1225,8 +1254,7 @@ async function renderSettings(main) {
     <h1>Настройки</h1>
 
     <section class="card settings-section">
-      <h2>Подключение</h2>
-      <p class="muted small hint">Имя модели, которое видят IDE в сниппетах и в <code>/v1/models</code>. В API Напарника не уходит — можно задать любое: латиница, цифры, <code>- _ . : /</code>.</p>
+      <h2>Подключение ${infoBtn('Имя модели, которое видят IDE в сниппетах и в <code>/v1/models</code>. В API Напарника не уходит — можно задать любое: латиница, цифры, <code>- _ . : /</code>.', 'Про ID модели')}</h2>
       <div class="grid cols2">
         <label class="narrow">ID модели для подключения
           <input id="s_model" value="${esc(s.model_id || 'naparnik')}" placeholder="naparnik">
@@ -1235,8 +1263,7 @@ async function renderSettings(main) {
     </section>
 
     <section class="card settings-section">
-      <h2>Ответы и сессии</h2>
-      <p class="muted small hint">Как шлюз отдаёт текст клиенту и держит диалог с Напарником.</p>
+      <h2>Ответы и сессии ${infoBtn('Как шлюз отдаёт текст клиенту и держит диалог с Напарником. Таймаут запроса применяется после перезапуска сервиса.', 'Про ответы и сессии')}</h2>
       <div class="grid cols2">
         <label>Режим потока по умолчанию
           ${ddHTML('s_stream', [
@@ -1257,8 +1284,7 @@ async function renderSettings(main) {
     </section>
 
     <section class="card settings-section">
-      <h2>Мониторинг и алерты</h2>
-      <p class="muted small hint">Опрос бюджетов ключей и уведомления о расходе лимита.</p>
+      <h2>Мониторинг и алерты ${infoBtn('Опрос бюджетов ключей и уведомления о расходе лимита. Период опроса применяется после перезапуска сервиса.', 'Про мониторинг')}</h2>
       <div class="grid cols2">
         <label>Период опроса бюджета
           <input id="s_poll" value="${esc(s.budget_poll_interval)}">
@@ -1275,8 +1301,7 @@ async function renderSettings(main) {
       </div>
     </section>
 
-    <div class="row"><button class="btn" onclick="saveSettings()">Сохранить</button></div>
-    <p class="muted small">Таймаут запроса и период опроса бюджета применяются после перезапуска сервиса.</p>`;
+    <div class="row"><button class="btn" onclick="saveSettings()">Сохранить</button></div>`;
 }
 
 async function saveSettings() {
@@ -1325,8 +1350,7 @@ gemini`],
   ];
 
   main.innerHTML = `
-    <h1>Подключение</h1>
-    <p class="muted small">Базовый адрес взят из первого gateway-слушателя. Токен выпускается в разделе «Токены».</p>
+    <h1>Подключение ${infoBtn('Базовый адрес взят из первого gateway-слушателя. Токен выпускается в разделе «Токены».', 'Про подключение')}</h1>
     ${snippets.map(([title, code]) => `
       <div class="card">
         <div class="row"><strong>${esc(title)}</strong><span class="spacer"></span>
