@@ -40,6 +40,17 @@ type Tool struct {
 	Schema      any
 }
 
+// LastUserText возвращает последнюю непустую реплику пользователя —
+// её сохраняем в журнале, чтобы видеть, что именно спрашивали.
+func LastUserText(turns []Turn) string {
+	for i := len(turns) - 1; i >= 0; i-- {
+		if turns[i].Role == RoleUser && strings.TrimSpace(turns[i].Text) != "" {
+			return turns[i].Text
+		}
+	}
+	return ""
+}
+
 // Part — фрагмент ответа ассистента (их может быть несколько в одном ответе).
 type Part struct {
 	Text      string

@@ -99,6 +99,8 @@ type LogEntry struct {
 	CachedTokens int       `json:"cached_tokens"`
 	LatencyMS    int       `json:"latency_ms"`
 	Stream       bool      `json:"stream"`
+	// Prompt — последняя реплика пользователя (обрезается при записи).
+	Prompt string `json:"prompt"`
 }
 
 // Open открывает (и при необходимости создаёт) базу.
@@ -187,7 +189,8 @@ CREATE TABLE IF NOT EXISTS request_log (
 	completion_tokens INTEGER NOT NULL DEFAULT 0,
 	cached_tokens INTEGER NOT NULL DEFAULT 0,
 	latency_ms INTEGER NOT NULL DEFAULT 0,
-	stream INTEGER NOT NULL DEFAULT 0
+	stream INTEGER NOT NULL DEFAULT 0,
+	prompt TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_log_ts ON request_log(ts);
 CREATE INDEX IF NOT EXISTS idx_log_key ON request_log(key_id, ts);
@@ -208,6 +211,9 @@ CREATE TABLE IF NOT EXISTS settings (
 	// Миграция: шифртекст токена, чтобы значение можно было выдать сотруднику повторно.
 	// У токенов, выпущенных раньше, колонка пустая — значение восстановить нельзя.
 	_, _ = s.db.Exec(`ALTER TABLE tokens ADD COLUMN secret_enc TEXT NOT NULL DEFAULT ''`)
+	// Миграция: текст вопроса пользователя в журнале запросов.
+	// У старых записей он пустой — тогда содержимое не сохранялось.
+	_, _ = s.db.Exec(`ALTER TABLE request_log ADD COLUMN prompt TEXT NOT NULL DEFAULT ''`)
 	return nil
 }
 
@@ -604,11 +610,40 @@ func (s *Store) Samples(ctx context.Context, keyID int64, since time.Time) ([]Sa
 func (s *Store) LogRequest(ctx context.Context, e LogEntry) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO request_log(ts, token_id, key_id, protocol, model, status, error_type,
-		 prompt_tokens, completion_tokens, cached_tokens, latency_ms, stream)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 prompt_tokens, completion_tokens, cached_tokens, latency_ms, stream, prompt)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		e.TS.Unix(), e.TokenID, e.KeyID, e.Protocol, e.Model, e.Status, e.ErrorType,
-		e.PromptTokens, e.CompTokens, e.CachedTokens, e.LatencyMS, boolInt(e.Stream))
+		e.PromptTokens, e.CompTokens, e.CachedTokens, e.LatencyMS, boolInt(e.Stream), cutRunes(e.Prompt, promptLimit))
 	return err
+}
+
+// promptLimit — сколько символов вопроса храним в журнале.
+const promptLimit = 2000
+
+// cutRunes обрезает строку по количеству символов, не ломая UTF-8.
+func cutRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
+}
+
+// PurgeLog удаляет записи журнала старше before. Нулевое время — удалить всё.
+func (s *Store) PurgeLog(ctx context.Context, before time.Time) (int64, error) {
+	var (
+		res sql.Result
+		err error
+	)
+	if before.IsZero() {
+		res, err = s.db.ExecContext(ctx, `DELETE FROM request_log`)
+	} else {
+		res, err = s.db.ExecContext(ctx, `DELETE FROM request_log WHERE ts < ?`, before.Unix())
+	}
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // LogFilter — фильтр журнала.
@@ -654,7 +689,7 @@ func (s *Store) QueryLog(ctx context.Context, f LogFilter) ([]LogEntry, int, err
 		f.Limit = 50
 	}
 	q := `SELECT id, ts, token_id, key_id, protocol, model, status, error_type,
-	         prompt_tokens, completion_tokens, cached_tokens, latency_ms, stream
+	         prompt_tokens, completion_tokens, cached_tokens, latency_ms, stream, prompt
 	      FROM request_log ` + where + ` ORDER BY ts DESC LIMIT ? OFFSET ?`
 	rows, err := s.db.QueryContext(ctx, q, append(args, f.Limit, f.Offset)...)
 	if err != nil {
@@ -667,7 +702,7 @@ func (s *Store) QueryLog(ctx context.Context, f LogFilter) ([]LogEntry, int, err
 		var ts int64
 		var stream int
 		if err := rows.Scan(&e.ID, &ts, &e.TokenID, &e.KeyID, &e.Protocol, &e.Model, &e.Status, &e.ErrorType,
-			&e.PromptTokens, &e.CompTokens, &e.CachedTokens, &e.LatencyMS, &stream); err != nil {
+			&e.PromptTokens, &e.CompTokens, &e.CachedTokens, &e.LatencyMS, &stream, &e.Prompt); err != nil {
 			return nil, 0, err
 		}
 		e.TS = time.Unix(ts, 0)

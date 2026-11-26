@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func newTestStore(t *testing.T) *Store {
@@ -201,5 +203,49 @@ func TestSettings(t *testing.T) {
 	v, err := st.GetSetting(ctx, "k")
 	if err != nil || v != "v2" {
 		t.Fatalf("настройка: %v %q", err, v)
+	}
+}
+
+func TestLogPromptAndPurge(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	keyID, _ := st.CreateKey(ctx, "К", "…1111", []byte{1})
+	tokID, _ := st.CreateToken(ctx, Token{KeyID: keyID, Name: "T", Prefix: "nr_", ServerTools: "auto", Enabled: true}, "h", "")
+
+	now := time.Now()
+	long := strings.Repeat("я", promptLimit+50)
+	for _, ts := range []time.Time{now.AddDate(0, 0, -10), now} {
+		if err := st.LogRequest(ctx, LogEntry{
+			TS: ts, TokenID: tokID, KeyID: keyID, Protocol: "openai", Model: "naparnik",
+			Status: 200, Prompt: long,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entries, total, err := st.QueryLog(ctx, LogFilter{})
+	if err != nil || total != 2 {
+		t.Fatalf("журнал: %v total=%d", err, total)
+	}
+	if got := utf8.RuneCountInString(entries[0].Prompt); got != promptLimit {
+		t.Fatalf("вопрос должен обрезаться до %d символов, получено %d", promptLimit, got)
+	}
+
+	deleted, err := st.PurgeLog(ctx, now.AddDate(0, 0, -5))
+	if err != nil || deleted != 1 {
+		t.Fatalf("удаление старых: deleted=%d err=%v", deleted, err)
+	}
+	_, total, _ = st.QueryLog(ctx, LogFilter{})
+	if total != 1 {
+		t.Fatalf("должна остаться одна свежая запись, осталось %d", total)
+	}
+
+	deleted, err = st.PurgeLog(ctx, time.Time{})
+	if err != nil || deleted != 1 {
+		t.Fatalf("полная очистка: deleted=%d err=%v", deleted, err)
+	}
+	_, total, _ = st.QueryLog(ctx, LogFilter{})
+	if total != 0 {
+		t.Fatalf("журнал должен быть пуст, осталось %d", total)
 	}
 }

@@ -100,7 +100,7 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.remember(principal.Token.ID, sessionID(r), reply)
-		h.logRequest(r, principal, model, 200, "", reply, time.Since(started), false)
+		h.logRequest(r, principal, model, 200, "", reply, time.Since(started), false, gateway.LastUserText(turns))
 		httpx.JSON(w, http.StatusOK, h.buildResponse(model, reply))
 		return
 	}
@@ -123,12 +123,12 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 	reply, err := h.Engine.Execute(r.Context(), input)
 	if err != nil {
 		ge := gateway.FromError(err)
-		h.logRequest(r, principal, model, ge.Status, ge.Code, nil, time.Since(started), true)
+		h.logRequest(r, principal, model, ge.Status, ge.Code, nil, time.Since(started), true, gateway.LastUserText(turns))
 		sw.Event("", mustJSON(geminiError(ge)))
 		return
 	}
 	h.remember(principal.Token.ID, sessionID(r), reply)
-	h.logRequest(r, principal, model, 200, "", reply, time.Since(started), true)
+	h.logRequest(r, principal, model, 200, "", reply, time.Since(started), true, gateway.LastUserText(turns))
 
 	if h.streamMode(principal) != "deltas" {
 		if text := reply.Text(); text != "" {
@@ -370,7 +370,7 @@ func parsePath(path string) (model string, stream bool, ok bool) {
 func (h *Handler) writeError(w http.ResponseWriter, p *gateway.Principal, err error) {
 	ge := gateway.FromError(err)
 	if p != nil {
-		h.logRequest(nil, p, "", ge.Status, ge.Code, nil, 0, false)
+		h.logRequest(nil, p, "", ge.Status, ge.Code, nil, 0, false, "")
 	}
 	httpx.JSON(w, ge.Status, geminiError(ge))
 }
@@ -395,14 +395,14 @@ func geminiError(ge *gateway.Error) map[string]any {
 }
 
 func (h *Handler) logRequest(r *http.Request, p *gateway.Principal, model string, status int, errType string,
-	reply *gateway.Reply, latency time.Duration, stream bool) {
+	reply *gateway.Reply, latency time.Duration, stream bool, prompt string) {
 	if p == nil {
 		return
 	}
 	entry := store.LogEntry{
 		TS: time.Now(), TokenID: p.Token.ID, KeyID: p.Token.KeyID,
 		Protocol: "gemini", Model: model, Status: status, ErrorType: errType,
-		LatencyMS: int(latency.Milliseconds()), Stream: stream,
+		LatencyMS: int(latency.Milliseconds()), Stream: stream, Prompt: prompt,
 	}
 	if reply != nil && reply.Usage != nil {
 		entry.PromptTokens = reply.Usage.PromptTokens

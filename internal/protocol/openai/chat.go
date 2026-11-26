@@ -104,7 +104,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			h.writeError(w, principal, err)
 			return
 		}
-		h.logRequest(r, principal, req.Model, 200, "", reply, time.Since(started), false)
+		h.logRequest(r, principal, req.Model, 200, "", reply, time.Since(started), false, gateway.LastUserText(turns))
 		httpx.JSON(w, http.StatusOK, buildCompletion(req.Model, reply))
 		return
 	}
@@ -123,11 +123,11 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	reply, err := h.Engine.Execute(r.Context(), input)
 	if err != nil {
 		ge := gateway.FromError(err)
-		h.logRequest(r, principal, req.Model, ge.Status, ge.Code, nil, time.Since(started), true)
+		h.logRequest(r, principal, req.Model, ge.Status, ge.Code, nil, time.Since(started), true, gateway.LastUserText(turns))
 		sw.Event("", errorJSON(ge))
 		return
 	}
-	h.logRequest(r, principal, req.Model, 200, "", reply, time.Since(started), true)
+	h.logRequest(r, principal, req.Model, 200, "", reply, time.Since(started), true, gateway.LastUserText(turns))
 
 	// Первый чанк с ролью.
 	sw.Event("", chunkJSON(req.Model, map[string]any{"role": "assistant", "content": ""}, nil, nil))
@@ -193,7 +193,7 @@ func (h *Handler) streamMode(p *gateway.Principal) string {
 func (h *Handler) writeError(w http.ResponseWriter, p *gateway.Principal, err error) {
 	ge := gateway.FromError(err)
 	if p != nil {
-		h.logRequest(nil, p, "", ge.Status, ge.Code, nil, 0, false)
+		h.logRequest(nil, p, "", ge.Status, ge.Code, nil, 0, false, "")
 	}
 	httpx.JSON(w, ge.Status, map[string]any{
 		"error": map[string]any{"message": ge.Message, "type": ge.Code, "code": ge.Code},
@@ -201,7 +201,7 @@ func (h *Handler) writeError(w http.ResponseWriter, p *gateway.Principal, err er
 }
 
 func (h *Handler) logRequest(r *http.Request, p *gateway.Principal, model string, status int, errType string,
-	reply *gateway.Reply, latency time.Duration, stream bool) {
+	reply *gateway.Reply, latency time.Duration, stream bool, prompt string) {
 	if p == nil {
 		return
 	}
@@ -215,6 +215,7 @@ func (h *Handler) logRequest(r *http.Request, p *gateway.Principal, model string
 		ErrorType: errType,
 		LatencyMS: int(latency.Milliseconds()),
 		Stream:    stream,
+		Prompt:    prompt,
 	}
 	if reply != nil && reply.Usage != nil {
 		entry.PromptTokens = reply.Usage.PromptTokens

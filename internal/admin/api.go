@@ -60,6 +60,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/sessions", s.deleteSession)
 
 	mux.HandleFunc("GET /api/logs", s.logs)
+	mux.HandleFunc("POST /api/logs/purge", s.purgeLogs)
 
 	mux.HandleFunc("GET /api/listeners", s.getListeners)
 	mux.HandleFunc("PUT /api/listeners", s.putListeners)
@@ -676,6 +677,32 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 		entries = []store.LogEntry{}
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"entries": entries, "total": total})
+}
+
+// purgeLogs удаляет старые записи журнала запросов. days=0 — удалить всё.
+func (s *Server) purgeLogs(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Days int `json:"days"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "Не удалось разобрать запрос"})
+		return
+	}
+	if req.Days < 0 {
+		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "Срок хранения не может быть отрицательным"})
+		return
+	}
+	var before time.Time
+	if req.Days > 0 {
+		before = time.Now().AddDate(0, 0, -req.Days)
+	}
+	deleted, err := s.Store.PurgeLog(r.Context(), before)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.Log.Info("журнал запросов очищен", "deleted", deleted, "days", req.Days)
+	httpx.JSON(w, http.StatusOK, map[string]any{"deleted": deleted})
 }
 
 // ---------- слушатели ----------

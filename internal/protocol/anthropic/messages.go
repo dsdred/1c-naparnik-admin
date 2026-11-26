@@ -97,7 +97,7 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 			h.writeError(w, principal, err)
 			return
 		}
-		h.logRequest(r, principal, req.Model, 200, "", reply, time.Since(started), false)
+		h.logRequest(r, principal, req.Model, 200, "", reply, time.Since(started), false, gateway.LastUserText(turns))
 		httpx.JSON(w, http.StatusOK, buildMessage(req.Model, reply))
 		return
 	}
@@ -138,14 +138,14 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	reply, err := h.Engine.Execute(r.Context(), input)
 	if err != nil {
 		ge := gateway.FromError(err)
-		h.logRequest(r, principal, req.Model, ge.Status, ge.Code, nil, time.Since(started), true)
+		h.logRequest(r, principal, req.Model, ge.Status, ge.Code, nil, time.Since(started), true, gateway.LastUserText(turns))
 		sw.Event("error", mustJSON(map[string]any{
 			"type":  "error",
 			"error": map[string]any{"type": anthropicErrorType(ge.Status), "message": ge.Message},
 		}))
 		return
 	}
-	h.logRequest(r, principal, req.Model, 200, "", reply, time.Since(started), true)
+	h.logRequest(r, principal, req.Model, 200, "", reply, time.Since(started), true, gateway.LastUserText(turns))
 
 	if h.streamMode(principal) != "deltas" {
 		if text := reply.Text(); text != "" {
@@ -213,7 +213,7 @@ func (h *Handler) streamMode(p *gateway.Principal) string {
 func (h *Handler) writeError(w http.ResponseWriter, p *gateway.Principal, err error) {
 	ge := gateway.FromError(err)
 	if p != nil {
-		h.logRequest(nil, p, "", ge.Status, ge.Code, nil, 0, false)
+		h.logRequest(nil, p, "", ge.Status, ge.Code, nil, 0, false, "")
 	}
 	httpx.JSON(w, ge.Status, map[string]any{
 		"type":  "error",
@@ -222,14 +222,14 @@ func (h *Handler) writeError(w http.ResponseWriter, p *gateway.Principal, err er
 }
 
 func (h *Handler) logRequest(r *http.Request, p *gateway.Principal, model string, status int, errType string,
-	reply *gateway.Reply, latency time.Duration, stream bool) {
+	reply *gateway.Reply, latency time.Duration, stream bool, prompt string) {
 	if p == nil {
 		return
 	}
 	entry := store.LogEntry{
 		TS: time.Now(), TokenID: p.Token.ID, KeyID: p.Token.KeyID,
 		Protocol: "anthropic", Model: model, Status: status, ErrorType: errType,
-		LatencyMS: int(latency.Milliseconds()), Stream: stream,
+		LatencyMS: int(latency.Milliseconds()), Stream: stream, Prompt: prompt,
 	}
 	if reply != nil && reply.Usage != nil {
 		entry.PromptTokens = reply.Usage.PromptTokens

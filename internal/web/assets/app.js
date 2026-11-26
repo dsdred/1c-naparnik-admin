@@ -1155,27 +1155,68 @@ async function renderLogs(main) {
   const [keys, tokens] = await Promise.all([api('/api/keys'), api('/api/tokens')]);
   const res = await api('/api/logs?limit=100');
   const tokenName = (id) => (tokens.find((t) => t.id === id) || {}).name || ('#' + id);
+  const cut = (s, n) => {
+    const t = String(s || '');
+    return t.length > n ? t.slice(0, n - 1) + '…' : t;
+  };
 
   main.innerHTML = `
-    <h1>Журнал запросов</h1>
+    <h1>Журнал запросов ${infoBtn('Что именно спрашивали пользователи: последняя реплика каждого запроса, до 2000 символов. Старые записи можно удалить кнопкой справа.', 'Про журнал')}</h1>
     <div class="card">
-      <div class="row small muted">Всего записей: ${fmtNum(res.total)}</div>
+      <div class="row small muted">
+        <span>Всего записей: ${fmtNum(res.total)}</span>
+        <span class="spacer"></span>
+        <label class="inline-label">Удалить записи старше
+          <select id="log-days" style="width:auto;margin-top:0">
+            <option value="7">7 дней</option>
+            <option value="30" selected>30 дней</option>
+            <option value="90">90 дней</option>
+            <option value="365">года</option>
+            <option value="0">все записи</option>
+          </select>
+        </label>
+        <button class="btn ghost small" onclick="purgeLogs()">Очистить</button>
+      </div>
       <table>
-        <thead><tr><th>Время</th><th>Токен</th><th>Протокол</th><th>Статус</th><th>Токены</th><th>мс</th></tr></thead>
+        <thead><tr><th>Время</th><th>Токен</th><th>Запрос</th><th>Протокол</th><th>Статус</th><th>Токены</th><th>мс</th></tr></thead>
         <tbody>
           ${res.entries.map((e) => `<tr>
             <td class="small">${fmtTime(e.ts)}</td>
             <td class="small">${esc(tokenName(e.token_id))}</td>
+            <td class="small log-prompt" title="${esc(e.prompt || '')}">${e.prompt
+              ? esc(cut(e.prompt, 90))
+              : '<span class="muted">—</span>'}</td>
             <td class="small muted">${esc(e.protocol)}${e.stream ? ' · SSE' : ''}</td>
             <td class="small">${e.status >= 400
               ? '<span class="badge crit">' + e.status + ' ' + esc(e.error_type || '') + '</span>'
               : '<span class="badge ok">' + e.status + '</span>'}</td>
             <td class="small">${fmtNum(e.prompt_tokens + e.completion_tokens)}</td>
             <td class="small muted">${e.latency_ms}</td>
-          </tr>`).join('') || '<tr><td colspan="6" class="muted">Записей нет</td></tr>'}
+          </tr>`).join('') || '<tr><td colspan="7" class="muted">Записей нет</td></tr>'}
         </tbody>
       </table>
     </div>`;
+}
+
+// purgeLogs удаляет записи журнала старше выбранного срока (0 — все).
+async function purgeLogs() {
+  const sel = document.getElementById('log-days');
+  const days = Number(sel.value);
+  const label = sel.options[sel.selectedIndex].textContent;
+  const ok = await confirmDialog({
+    title: days ? 'Удалить старые записи?' : 'Очистить журнал полностью?',
+    text: days
+      ? `Будут удалены записи старше ${label}. Отменить это действие нельзя.`
+      : 'Будут удалены все записи журнала. Отменить это действие нельзя.',
+    ok: 'Удалить',
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    const r = await api('/api/logs/purge', { method: 'POST', body: { days } });
+    toast('Удалено записей: ' + fmtNum(r.deleted));
+    go('logs');
+  } catch (e) { toast(e.message, true); }
 }
 
 /* ---------- слушатели ---------- */
