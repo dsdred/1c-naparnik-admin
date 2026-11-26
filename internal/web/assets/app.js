@@ -68,7 +68,9 @@ function fmtTime(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
   if (isNaN(d)) return '—';
-  return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  // Собираем вручную: toLocaleString('ru-RU') ставит запятую между датой и временем.
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getDate())}.${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 function until(iso) {
