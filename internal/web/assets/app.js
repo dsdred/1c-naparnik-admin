@@ -1190,7 +1190,7 @@ function paintListeners(main) {
     <h1>Слушатели ${infoBtn('Можно слушать несколько портов одновременно. Для доступа из локальной сети укажите 0.0.0.0:порт. Админку держите на 127.0.0.1, если не нужен удалённый доступ.', 'Про слушателей')}</h1>
     <div class="card">
       <table>
-        <thead><tr><th>Адрес</th><th>Тип</th><th>Включён</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Адрес</th><th>Тип</th><th></th></tr></thead>
         <tbody id="listeners-body">
           ${state.listeners.map((l, i) => listenerRow(l, i)).join('') || '<tr><td colspan="4" class="muted">Слушателей нет — добавьте хотя бы один.</td></tr>'}
         </tbody>
@@ -1209,14 +1209,14 @@ function listenerRow(l, i) {
     { value: 'admin', label: 'admin — админка' },
   ];
   return `<tr>
-    <td><input value="${esc(l.addr)}" data-addr="${i}" style="width:100%"></td>
-    <td>${ddHTML('lkind-' + i, kinds, l.kind, '', 'data-kind="' + i + '"')}</td>
     <td>
       <label class="switch" title="${l.disabled ? 'Включить слушатель' : 'Выключить слушатель'}">
         <input type="checkbox" ${l.disabled ? '' : 'checked'} onchange="setListenerEnabled(${i}, this.checked)">
         <span class="track"><span class="knob"></span></span>
       </label>
     </td>
+    <td><input value="${esc(l.addr)}" data-addr="${i}" style="width:100%"></td>
+    <td>${ddHTML('lkind-' + i, kinds, l.kind, '', 'data-kind="' + i + '"')}</td>
     <td class="actions">${iconBtn('trash', 'Удалить слушатель', 'removeListenerRow(' + i + ')', 'danger')}</td>
   </tr>`;
 }
@@ -1234,7 +1234,8 @@ function syncListenerInputs() {
 
 function addListenerRow() {
   syncListenerInputs();
-  state.listeners.push({ addr: '127.0.0.1:47833', kind: 'gateway', disabled: false });
+  // Новый слушатель добавляется выключенным: включаешь осознанно, когда адрес и тип проверены.
+  state.listeners.push({ addr: '127.0.0.1:47833', kind: 'gateway', disabled: true });
   paintListeners(document.getElementById('main'));
 }
 
