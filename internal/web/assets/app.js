@@ -110,6 +110,13 @@ function statusLabel(code) {
   return KEY_STATUS[code] || code;
 }
 
+// keyStatusText — статус ключа одной строкой: «активен», «отключён», «лимит исчерпан — …».
+function keyStatusText(k) {
+  if (k.disabled) return 'отключён';
+  const label = k.status === 'active' ? 'активен' : statusLabel(k.status);
+  return k.status_text ? label + ' — ' + k.status_text : label;
+}
+
 // Провайдеры = протоколы шлюза. Пусто — токен принимает любой.
 const PROVIDERS = [
   { value: '', label: 'любой (по протоколу запроса)' },
@@ -488,14 +495,17 @@ async function renderKeys(main) {
     </div>
     <div class="card">
       <table>
-        <thead><tr><th>Название</th><th>Статус</th><th>Тариф</th><th>Токенов</th><th></th></tr></thead>
+        <thead><tr><th style="width:20px"></th><th>Название</th><th>Тариф</th><th>Токенов</th><th></th></tr></thead>
         <tbody>
-          ${keys.map((k) => `
+          ${keys.map((k) => {
+            const dot = k.disabled
+              ? ['crit', 'отключён']
+              : (k.status === 'active' ? ['ok', 'активен'] : ['warn', statusLabel(k.status)]);
+            const tip = dot[1] + (k.status_text ? ': ' + k.status_text : '');
+            return `
             <tr>
+              <td><span class="dot ${dot[0]}" title="${esc(tip)}"></span></td>
               <td>${esc(k.name)}</td>
-              <td>${k.disabled ? '<span class="badge crit">отключён</span>'
-                : k.status === 'active' ? '<span class="badge ok">активен</span>'
-                : '<span class="badge">' + esc(statusLabel(k.status)) + '</span>'}</td>
               <td class="small muted">${esc(k.tariff_label || '—')}</td>
               <td>${tokens.filter((t) => t.key_id === k.id).length}</td>
               <td class="actions">
@@ -505,7 +515,8 @@ async function renderKeys(main) {
                 ${iconBtn(k.disabled ? 'powerOn' : 'powerOff', k.disabled ? 'Включить' : 'Отключить', `toggleKey(${k.id}, ${!k.disabled})`)}
                 ${iconBtn('trash', 'Удалить', `deleteKey(${k.id})`, 'danger')}
               </td>
-            </tr>`).join('') || '<tr><td colspan="5" class="muted">Пока нет ключей</td></tr>'}
+            </tr>`;
+          }).join('') || '<tr><td colspan="5" class="muted">Пока нет ключей</td></tr>'}
         </tbody>
       </table>
     </div>`;
@@ -588,9 +599,18 @@ async function openKeyEdit(id) {
   wrap.className = 'modal-backdrop';
   wrap.id = 'key-modal';
   wrap.dataset.secret = secret;
+  const tokenCount = (state.tokens || []).filter((t) => t.key_id === id).length;
   wrap.innerHTML = `
     <div class="modal">
-      <h2 style="margin-top:0">Изменить ключ</h2>
+      <div class="row" style="align-items:center;margin-bottom:14px">
+        <h2 style="margin:0">Изменить ключ</h2>
+        <span class="spacer"></span>
+        <label class="switch" title="Включить или отключить ключ — шлюз перестанет отдавать его токенам">
+          <input type="checkbox" id="e_enabled" ${k.disabled ? '' : 'checked'}>
+          <span class="track"><span class="knob"></span></span>
+          <span class="switch-label">включён</span>
+        </label>
+      </div>
       <div class="grid">
         <label>Название<input id="e_name" value="${esc(k.name)}"></label>
         <label>Тариф${ddHTML('e_tariff', tariffOpts(k.tariff_label), k.tariff_label || '', '')}</label>
@@ -600,9 +620,11 @@ async function openKeyEdit(id) {
             ${iconBtn('copy', 'Копировать ключ', 'copyKeyField()')}
           </div>
         </label>
-        <p class="muted small" style="margin:0">Измените значение и сохраните — ключ заменится. Маску ключа в списке
-          увидите, если не удалось его расшифровать. При доступе к админке по сети нужен HTTPS.</p>
       </div>
+      <p class="muted small" style="margin:14px 0 0">Статус: ${esc(keyStatusText(k))} · токенов ${tokenCount}
+        · создан ${fmtTime(k.created_at)}</p>
+      <p class="muted small" style="margin:6px 0 0">Измените значение ключа и сохраните — ключ заменится. Маску ключа
+        в списке увидите, если не удалось его расшифровать. При доступе к админке по сети нужен HTTPS.</p>
       <div class="row" style="justify-content:flex-end;margin-top:18px">
         <button class="btn ghost" onclick="closeKeyEdit()">Отмена</button>
         <button class="btn" onclick="saveKeyEdit(${k.id})">Сохранить</button>
@@ -631,6 +653,8 @@ async function saveKeyEdit(id) {
   const original = document.getElementById('key-modal').dataset.secret || '';
   const body = { name, tariff_label: tariff };
   if (keyVal && keyVal !== original) body.key = keyVal;
+  const chk = document.getElementById('e_enabled');
+  if (chk) body.disabled = !chk.checked;
   try {
     await api('/api/keys/' + id, { method: 'PATCH', body });
     closeKeyEdit();
