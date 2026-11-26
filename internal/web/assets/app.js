@@ -383,7 +383,7 @@ const ICONS = {
   tokens: '<path d="M4 8a2 2 0 0 1 2-2h7l6 6-7 7-8-8z"/><circle cx="8.5" cy="9.5" r="1.2"/>',
   sessions: '<path d="M4 6h16M4 12h16M4 18h10"/>',
   logs: '<path d="M6 3h9l4 4v14H6z"/><path d="M9 12h6M9 16h6"/>',
-  listeners: '<path d="M12 3v8"/><path d="M7 6.5a7 7 0 0 0 10 0"/><path d="M9 21h6"/><path d="M12 15v6"/>',
+  listeners: '<circle cx="12" cy="12" r="2.2"/><path d="M8.4 8.4a5.1 5.1 0 0 0 0 7.2M5.6 5.6a9.1 9.1 0 0 0 0 12.8"/><path d="M8.4 8.4a5.1 5.1 0 0 0 0 7.2M5.6 5.6a9.1 9.1 0 0 0 0 12.8" transform="translate(24 0) scale(-1 1)"/>',
   settings: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
   connect: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/>',
 };
