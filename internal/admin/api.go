@@ -696,13 +696,14 @@ func validateListeners(list []config.Listener) error {
 		if l.Kind != config.KindGateway && l.Kind != config.KindAdmin {
 			return fmt.Errorf("Неизвестный тип слушателя: %s", l.Kind)
 		}
-		if seen[l.Addr] {
-			return fmt.Errorf("Адрес указан дважды: %s", l.Addr)
-		}
-		seen[l.Addr] = true
 		if l.Disabled {
+			// Выключенная запись порт не занимает, поэтому дубль адреса с ней допустим.
 			continue
 		}
+		if seen[l.Addr] {
+			return fmt.Errorf("Адрес %s уже занят другим включённым слушателем", l.Addr)
+		}
+		seen[l.Addr] = true
 		enabled++
 		if l.Kind == config.KindAdmin {
 			enabledAdmin++

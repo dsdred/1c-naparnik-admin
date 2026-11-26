@@ -64,6 +64,14 @@ func TestValidateListeners(t *testing.T) {
 		t.Fatal("без включённых слушателей набор недопустим")
 	}
 
+	offDup := []config.Listener{
+		{Addr: "127.0.0.1:47830", Kind: config.KindAdmin},
+		{Addr: "127.0.0.1:47830", Kind: config.KindGateway, Disabled: true},
+	}
+	if err := validateListeners(offDup); err != nil {
+		t.Fatalf("дубль с выключенным слушателем допустим: %v", err)
+	}
+
 	dup := []config.Listener{
 		{Addr: "127.0.0.1:47830", Kind: config.KindAdmin},
 		{Addr: "127.0.0.1:47830", Kind: config.KindGateway},

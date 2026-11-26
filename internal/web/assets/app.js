@@ -1185,16 +1185,33 @@ async function renderListeners(main) {
   paintListeners(main);
 }
 
+// duplicateAddrs возвращает адреса, которые заняты несколькими включёнными слушателями.
+// Выключенные записи порт не занимают, поэтому с ними дубль допустим.
+function duplicateAddrs(list) {
+  const seen = new Set();
+  const dup = new Set();
+  list.forEach((l) => {
+    if (l.disabled) return;
+    const addr = String(l.addr || '').trim();
+    if (!addr) return;
+    if (seen.has(addr)) dup.add(addr);
+    else seen.add(addr);
+  });
+  return dup;
+}
+
 function paintListeners(main) {
+  const dup = duplicateAddrs(state.listeners);
   main.innerHTML = `
     <h1>Слушатели ${infoBtn('Можно слушать несколько портов одновременно. Для доступа из локальной сети укажите 0.0.0.0:порт. Админку держите на 127.0.0.1, если не нужен удалённый доступ.', 'Про слушателей')}</h1>
     <div class="card">
       <table>
         <thead><tr><th></th><th>Адрес</th><th>Тип</th><th></th></tr></thead>
         <tbody id="listeners-body">
-          ${state.listeners.map((l, i) => listenerRow(l, i)).join('') || '<tr><td colspan="4" class="muted">Слушателей нет — добавьте хотя бы один.</td></tr>'}
+          ${state.listeners.map((l, i) => listenerRow(l, i, dup)).join('') || '<tr><td colspan="4" class="muted">Слушателей нет — добавьте хотя бы один.</td></tr>'}
         </tbody>
       </table>
+      ${dup.size ? `<p class="field-error">Адрес ${esc([...dup][0])} занят двумя включёнными слушателями — выключите один или измените порт.</p>` : ''}
       <div class="row" style="margin-top:12px">
         <button class="btn ghost" onclick="addListenerRow()">Добавить</button>
         <span class="spacer"></span>
@@ -1203,11 +1220,13 @@ function paintListeners(main) {
     </div>`;
 }
 
-function listenerRow(l, i) {
+function listenerRow(l, i, dup) {
   const kinds = [
     { value: 'gateway', label: 'gateway — шлюз для IDE' },
     { value: 'admin', label: 'admin — админка' },
   ];
+  const addr = String(l.addr || '').trim();
+  const clash = dup && dup.has(addr);
   return `<tr>
     <td>
       <label class="switch" title="${l.disabled ? 'Включить слушатель' : 'Выключить слушатель'}">
@@ -1215,7 +1234,7 @@ function listenerRow(l, i) {
         <span class="track"><span class="knob"></span></span>
       </label>
     </td>
-    <td><input value="${esc(l.addr)}" data-addr="${i}" style="width:100%"></td>
+    <td><input value="${esc(l.addr)}" data-addr="${i}" class="${clash ? 'invalid' : ''}" style="width:100%"${clash ? ' title="Этот адрес уже занят другим включённым слушателем"' : ''}></td>
     <td>${ddHTML('lkind-' + i, kinds, l.kind, '', 'data-kind="' + i + '"')}</td>
     <td class="actions">${iconBtn('trash', 'Удалить слушатель', 'removeListenerRow(' + i + ')', 'danger')}</td>
   </tr>`;
@@ -1247,18 +1266,29 @@ function listenerPayload() {
 }
 
 // setListenerEnabled включает и выключает слушатель сразу, без кнопки «Применить».
+// Если адрес уже занят другим включённым слушателем, строки остаются на месте,
+// а поля с адресом подсвечиваются как ошибка.
 async function setListenerEnabled(i, on) {
   syncListenerInputs();
   const l = state.listeners[i];
   if (!l) return;
   l.disabled = !on;
+  const dup = duplicateAddrs(state.listeners);
+  if (dup.size) {
+    paintListeners(document.getElementById('main'));
+    toast('Адрес ' + [...dup][0] + ' уже занят другим включённым слушателем', true);
+    return;
+  }
   try {
     await api('/api/listeners', { method: 'PUT', body: listenerPayload() });
     toast(on ? 'Слушатель включён' : 'Слушатель выключен');
+    go('listeners');
   } catch (e) {
     toast(e.message, true);
+    // Не перечитываем список с сервера: иначе несохранённые правки (например,
+    // только что добавленная строка) пропадут из таблицы.
+    paintListeners(document.getElementById('main'));
   }
-  go('listeners');
 }
 
 function removeListenerRow(i) {
@@ -1271,8 +1301,11 @@ async function saveListeners() {
   syncListenerInputs();
   const list = listenerPayload();
   if (!list.length) return toast('Нужен хотя бы один слушатель', true);
-  const dup = list.find((l, i) => list.findIndex((x) => x.addr === l.addr) !== i);
-  if (dup) return toast('Адрес указан дважды: ' + dup.addr, true);
+  const dup = duplicateAddrs(list);
+  if (dup.size) {
+    paintListeners(document.getElementById('main'));
+    return toast('Адрес ' + [...dup][0] + ' уже занят другим включённым слушателем', true);
+  }
   try {
     await api('/api/listeners', { method: 'PUT', body: list });
     toast('Слушатели применены');
