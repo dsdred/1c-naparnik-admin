@@ -5,6 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Напарник — админка</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="alternate icon" href="/favicon.ico">
+  <meta name="theme-color" content="#141B25">
+  <script>
+    // Тема до первой отрисовки: без мигания светлым на тёмной теме.
+    try {
+      var t = localStorage.getItem('na-theme');
+      document.documentElement.setAttribute('data-theme', t === 'light' ? 'light' : 'dark');
+    } catch (e) {
+      document.documentElement.setAttribute('data-theme', 'dark');
+    }
+  </script>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>

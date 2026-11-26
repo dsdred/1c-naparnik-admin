@@ -20,3 +20,14 @@ config.ui.yaml
 # Логи и временные файлы
 *.log
 .tmp-*
+.tmp/
+screens/
+
+# Ресурсы, генерируемые make icon
+*.syso
+
+# Служебные файлы IDE и ОС
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

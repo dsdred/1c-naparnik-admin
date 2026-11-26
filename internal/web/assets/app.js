@@ -221,6 +221,54 @@ async function copy(text) {
   }
 }
 
+// Тема: data-theme на <html>, выбор запоминается в localStorage.
+const THEME_ICONS = {
+  // Показываем иконку текущей темы: солнце — светлая, луна — тёмная.
+  light: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M4.2 4.2l1.6 1.6M18.2 18.2l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.2 19.8l1.6-1.6M18.2 5.8l1.6-1.6"/></svg>',
+  dark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>',
+};
+
+function isLightTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'light';
+}
+
+// syncThemeButtons обновляет иконку и подсказку у всех переключателей темы.
+function syncThemeButtons() {
+  const light = isLightTheme();
+  const title = light ? 'Включить тёмную тему' : 'Включить светлую тему';
+  document.querySelectorAll('[data-theme-toggle]').forEach((btn) => {
+    btn.innerHTML = light ? THEME_ICONS.light : THEME_ICONS.dark;
+    btn.title = title;
+    btn.setAttribute('aria-label', title);
+  });
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', light ? '#f2f5f9' : '#141B25');
+}
+
+function toggleTheme() {
+  const next = isLightTheme() ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', next);
+  try { localStorage.setItem('na-theme', next); } catch (_) { /* приватный режим */ }
+  syncThemeButtons();
+}
+
+// Бургер-меню: на узких экранах сайдбар уезжает за край и открывается поверх контента.
+function toggleNav() {
+  const open = document.body.classList.toggle('nav-open');
+  const btn = document.querySelector('.nav-toggle');
+  if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function closeNav() {
+  document.body.classList.remove('nav-open');
+  const btn = document.querySelector('.nav-toggle');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeNav();
+});
+
 // confirmDialog — подтверждение в стиле админки вместо нативного confirm().
 // Возвращает Promise<boolean>: true — «ОК», false — отмена/Esc/клик по фону.
 function confirmDialog({ title, text, ok, cancel, danger }) {
@@ -340,20 +388,14 @@ const ICONS = {
   connect: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/>',
 };
 
-// Знак «Напарника»: монограмма Н в золотой плитке.
-const LOGO = `<svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
-  <defs>
-    <linearGradient id="logoGold" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ffe9a8"></stop>
-      <stop offset="0.45" stop-color="#f0c14b"></stop>
-      <stop offset="1" stop-color="#b8862a"></stop>
-    </linearGradient>
-  </defs>
-  <rect x="1" y="1" width="30" height="30" rx="9" fill="url(#logoGold)"></rect>
-  <rect x="1" y="1" width="30" height="30" rx="9" fill="none" stroke="rgba(255,255,255,.35)" stroke-width="1"></rect>
-  <path d="M10.5 9.5v13M21.5 9.5v13M10.5 16h11" fill="none" stroke="#1a1a16" stroke-width="2.6" stroke-linecap="round"></path>
-  <circle cx="24.2" cy="8.2" r="2.1" fill="#1a1a16"></circle>
-</svg>`;
+// Логотип из Naparnik Admin Brand Kit v1.0: горизонтальный в сайдбаре и на входе,
+// знак NA — в свёрнутом (узком) сайдбаре. Версия под тему выбирается в CSS.
+const LOGO = `<span class="brand-logo" aria-hidden="true">
+  <img class="bl bl-full bl-dark" src="/brand/logo-dark.svg" alt="Naparnik Admin">
+  <img class="bl bl-full bl-light" src="/brand/logo-light.svg" alt="">
+  <img class="bl bl-sym bl-dark" src="/brand/symbol-dark.svg" alt="">
+  <img class="bl bl-sym bl-light" src="/brand/symbol-light.svg" alt="">
+</span>`;
 
 const VIEWS = [
   { group: 'Мониторинг', items: [['overview', 'Обзор'], ['keys', 'Ключи'], ['tokens', 'Токены']] },
@@ -371,8 +413,8 @@ function navButton(id, title) {
 async function renderShell() {
   app.innerHTML = `
     <div class="layout">
-      <aside class="sidebar">
-        <div class="brand">${LOGO}<span>Напарник<small>админка шлюза</small></span></div>
+      <aside class="sidebar" id="sidebar">
+        <div class="brand">${LOGO}</div>
         <div class="nav">
           ${VIEWS.map((v) => `<div class="nav-group">${v.group}</div>${v.items.map(([id, t]) => navButton(id, t)).join('')}`).join('')}
         </div>
@@ -380,13 +422,25 @@ async function renderShell() {
           <button class="btn ghost small" style="width:100%" onclick="logout()">Выйти</button>
         </div>
       </aside>
-      <main class="main" id="main"></main>
+      <div class="nav-backdrop" id="navBackdrop" onclick="closeNav()"></div>
+      <div class="content">
+        <header class="topbar">
+          <button class="nav-toggle" onclick="toggleNav()" aria-label="Открыть меню" aria-controls="sidebar" aria-expanded="false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+          </button>
+          <div class="topbar-logo">${LOGO}</div>
+          <button class="theme-toggle" data-theme-toggle onclick="toggleTheme()"></button>
+        </header>
+        <main class="main" id="main"></main>
+      </div>
     </div>`;
+  syncThemeButtons();
   await go(state.view);
 }
 
 async function go(view) {
   state.view = view;
+  closeNav();
   document.querySelectorAll('.nav button').forEach((b) => {
     b.classList.toggle('active', b.dataset.view === view);
   });
