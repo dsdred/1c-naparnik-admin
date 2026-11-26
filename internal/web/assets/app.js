@@ -1208,6 +1208,7 @@ async function renderLogs(main) {
         <span class="muted small">Всего записей: ${fmtNum(res.total)}</span>
         <span class="spacer"></span>
         ${res.total ? `<span class="muted small">${fmtNum(from)}–${fmtNum(to)} из ${fmtNum(res.total)}</span>` : ''}
+        ${iconBtn('refresh', 'Обновить список', "go('logs')")}
         ${prevOff}
         ${nextOff}
       </div>
