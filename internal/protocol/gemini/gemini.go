@@ -119,6 +119,8 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	input.OnServerTool = func(string) { sw.Start() }
+	input.OnQueued = func() { sw.Start() }
+	input.OnStarted = func() { sw.Start() }
 
 	reply, err := h.Engine.Execute(r.Context(), input)
 	if err != nil {

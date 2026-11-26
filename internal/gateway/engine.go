@@ -105,12 +105,20 @@ type Input struct {
 	Turns     []Turn
 	Tools     []Tool
 
-	// OnText вызывается на каждую дельту текста (режим deltas).
+	// OnText вызывается на каждое подтверждённое сообщение ассистента: финальный
+	// пакет, а не черновик. Черновики Напарник вправе отфильтровать или переписать.
 	OnText func(text string)
-	// OnReasoning вызывается на каждую дельту рассуждения (reasoning_content).
+	// OnReasoning — то же для рассуждений (reasoning_content).
 	OnReasoning func(text string)
 	// OnServerTool вызывается, когда Напарник запросил серверный инструмент.
 	OnServerTool func(name string)
+	// OnQueued вызывается, если запрос встал в очередь за другим запросом той же
+	// сессии: обработчик успевает открыть поток и держать соединение пингами.
+	OnQueued func()
+	// OnStarted вызывается на первом пакете Напарника. К этому моменту запрос уже
+	// принят сервером, поэтому поток можно открывать: ошибки ключа и лимита
+	// приходят раньше, обычным HTTP-ответом.
+	OnStarted func()
 }
 
 // Engine — исполнитель запросов.
@@ -120,8 +128,15 @@ type Engine struct {
 	cfg    *config.Config
 
 	mu        sync.Mutex
-	locks     map[string]*sync.Mutex
+	locks     map[string]*keyLock
 	ctxWindow atomic.Int64
+}
+
+// keyLock — мьютекс сессии со счётчиком ожидающих. Когда очередь пуста,
+// запись удаляется из карты: иначе на каждый новый чат оставался бы замок навсегда.
+type keyLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 // ContextWindow возвращает последнее известное значение max_context_length.
@@ -129,18 +144,39 @@ func (e *Engine) ContextWindow() int { return int(e.ctxWindow.Load()) }
 
 // New создаёт движок.
 func New(client *naparnik.Client, st *store.Store, cfg *config.Config) *Engine {
-	return &Engine{client: client, store: st, cfg: cfg, locks: map[string]*sync.Mutex{}}
+	return &Engine{client: client, store: st, cfg: cfg, locks: map[string]*keyLock{}}
 }
 
-func (e *Engine) lockFor(key string) *sync.Mutex {
+// lockSession ставит запрос в очередь его сессии и возвращает функцию разблокировки.
+// Ожидающие учитываются в refs до того, как встают в очередь, поэтому замок
+// не удаляется, пока за ним кто-то стоит.
+func (e *Engine) lockSession(key string, onWait func()) func() {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	m, ok := e.locks[key]
+	l, ok := e.locks[key]
 	if !ok {
-		m = &sync.Mutex{}
-		e.locks[key] = m
+		l = &keyLock{}
+		e.locks[key] = l
 	}
-	return m
+	l.refs++
+	e.mu.Unlock()
+
+	if !l.mu.TryLock() {
+		// Сессия занята: второй запрос ждёт, но клиенту нужно об этом сказать —
+		// иначе он видит молчащее соединение и обрывает его по своему таймауту.
+		if onWait != nil {
+			onWait()
+		}
+		l.mu.Lock()
+	}
+	return func() {
+		l.mu.Unlock()
+		e.mu.Lock()
+		l.refs--
+		if l.refs == 0 {
+			delete(e.locks, key)
+		}
+		e.mu.Unlock()
+	}
 }
 
 // Execute прогоняет запрос через Напарника и возвращает собранный ответ.
@@ -152,15 +188,15 @@ func (e *Engine) Execute(ctx context.Context, in Input) (*Reply, error) {
 		return nil, &Error{Status: 400, Code: "invalid_request_error", Message: "пустая история сообщений"}
 	}
 
-	sessionKey := strings.TrimSpace(in.SessionID)
-	sticky := sessionKey == ""
-	if sticky {
-		sessionKey = "sticky"
-	}
+	sessionKey, sticky := resolveSessionKey(in.SessionID, in.Turns)
 
-	mu := e.lockFor(fmt.Sprintf("%d:%s:%s", in.Token.ID, in.Protocol, sessionKey))
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := e.lockSession(fmt.Sprintf("%d:%s:%s", in.Token.ID, in.Protocol, sessionKey), in.OnQueued)
+	defer unlock()
+
+	if err := ctx.Err(); err != nil {
+		// Пока стояли в очереди, клиент ушёл: не тратим лимит на заведомо мёртвый запрос.
+		return nil, &Error{Status: 499, Code: "client_closed", Message: "клиент закрыл соединение, пока запрос ждал очереди"}
+	}
 
 	binding, err := e.store.GetSession(ctx, in.Token.ID, in.Protocol, sessionKey)
 	expired := err == nil && e.cfg.SessionTTL.D() > 0 && timeSince(binding.UpdatedAt) > e.cfg.SessionTTL.D()
@@ -228,24 +264,27 @@ func (e *Engine) Execute(ctx context.Context, in Input) (*Reply, error) {
 
 	queue := groups
 	rounds := 0
+	// Разделитель между сообщениями ассистента тот же, что в Reply.Text/Reasoning.
+	textStarted, reasonStarted := false, false
+	accepted := false
 	for len(queue) > 0 {
 		g := queue[0]
 		queue = queue[1:]
 
 		var serverResults []naparnik.ToolResult
 		uuid, err := e.send(ctx, in.Key, conversation, parent, g, wireTools, false, func(p naparnik.Packet) {
+			if !accepted {
+				accepted = true
+				if in.OnStarted != nil {
+					in.OnStarted()
+				}
+			}
 			if p.UUID != "" {
 				lastUUID = p.UUID
 			}
 			if !p.Finished {
-				if p.ContentDelta != nil {
-					if p.ContentDelta.ReasoningContent != "" && in.OnReasoning != nil {
-						in.OnReasoning(p.ContentDelta.ReasoningContent)
-					}
-					if p.ContentDelta.Content != "" && in.OnText != nil {
-						in.OnText(p.ContentDelta.Content)
-					}
-				}
+				// Черновики (content_delta) клиенту не отдаём: сервер вправе их
+				// отфильтровать или переписать, а финальный content приоритетнее.
 				return
 			}
 			if p.Usage != nil {
@@ -286,6 +325,25 @@ func (e *Engine) Execute(ctx context.Context, in Input) (*Reply, error) {
 				})
 			}
 			reply.Parts = append(reply.Parts, part)
+
+			// Подтверждённое сообщение отдаём сразу: в режиме deltas клиент получает
+			// ответ по мере готовности, но никогда — черновик.
+			if part.Reasoning != "" && in.OnReasoning != nil {
+				if reasonStarted {
+					in.OnReasoning("\n\n" + part.Reasoning)
+				} else {
+					in.OnReasoning(part.Reasoning)
+					reasonStarted = true
+				}
+			}
+			if part.Text != "" && in.OnText != nil {
+				if textStarted {
+					in.OnText("\n\n" + part.Text)
+				} else {
+					in.OnText(part.Text)
+					textStarted = true
+				}
+			}
 		})
 		if err != nil {
 			return nil, err
@@ -444,6 +502,20 @@ func tailAfterLastAssistant(turns []Turn) []Turn {
 		}
 	}
 	return turns
+}
+
+// resolveSessionKey выбирает ключ сессии. Если клиент не прислал заголовок сессии
+// (Cline, Continue, Roo), ключ строится по отпечатку первого сообщения: у каждого
+// чата одного токена свои замок и диалог, иначе параллельные чаты стоят в одной
+// очереди и по очереди пересоздают диалог друг друга.
+func resolveSessionKey(sessionID string, turns []Turn) (key string, sticky bool) {
+	if key = strings.TrimSpace(sessionID); key != "" {
+		return key, false
+	}
+	if fp := fingerprintOf(turns); fp != "" {
+		return "sticky:" + fp, true
+	}
+	return "sticky", true
 }
 
 // fingerprintOf считает отпечаток первого пользовательского сообщения —

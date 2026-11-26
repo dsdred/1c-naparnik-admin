@@ -2,7 +2,10 @@ package gateway
 
 import (
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"naparnikadmin/internal/naparnik"
 )
@@ -108,6 +111,93 @@ func TestFingerprint(t *testing.T) {
 	}
 	if a == c {
 		t.Fatal("разные сообщения должны давать разные отпечатки")
+	}
+}
+
+func TestResolveSessionKeyIsolatesChats(t *testing.T) {
+	chatA := []Turn{{Role: RoleUser, Text: "первый вопрос"}}
+	chatB := []Turn{{Role: RoleUser, Text: "другой вопрос"}}
+
+	keyA, stickyA := resolveSessionKey("", chatA)
+	keyB, stickyB := resolveSessionKey("", chatB)
+	if !stickyA || !stickyB {
+		t.Fatal("без заголовка сессия должна считаться sticky")
+	}
+	if keyA == keyB {
+		t.Fatalf("разные чаты получили один ключ: %q", keyA)
+	}
+
+	// Продолжение того же чата: первое сообщение не меняется.
+	keyA2, _ := resolveSessionKey("", []Turn{
+		{Role: RoleUser, Text: "первый вопрос"},
+		{Role: RoleAssistant, Text: "ответ"},
+		{Role: RoleUser, Text: "уточнение"},
+	})
+	if keyA2 != keyA {
+		t.Fatalf("продолжение чата сменило ключ: %q != %q", keyA2, keyA)
+	}
+
+	// Заголовок клиента важнее отпечатка.
+	keyH, stickyH := resolveSessionKey("sess-42", chatA)
+	if stickyH || keyH != "sess-42" {
+		t.Fatalf("ключ из заголовка потерялся: %q sticky=%v", keyH, stickyH)
+	}
+}
+
+func TestLockSessionSerializesAndCleansUp(t *testing.T) {
+	e := &Engine{locks: map[string]*keyLock{}}
+	var inside, peak int32
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			unlock := e.lockSession("k", nil)
+			defer unlock()
+			n := atomic.AddInt32(&inside, 1)
+			for {
+				p := atomic.LoadInt32(&peak)
+				if n <= p || atomic.CompareAndSwapInt32(&peak, p, n) {
+					break
+				}
+			}
+			time.Sleep(2 * time.Millisecond)
+			atomic.AddInt32(&inside, -1)
+		}()
+	}
+	wg.Wait()
+	if peak != 1 {
+		t.Fatalf("запросы одной сессии пошли параллельно, одновременно: %d", peak)
+	}
+	if len(e.locks) != 0 {
+		t.Fatalf("после освобождения остались замки: %d", len(e.locks))
+	}
+}
+
+func TestLockSessionNotifiesWaiter(t *testing.T) {
+	e := &Engine{locks: map[string]*keyLock{}}
+	first := e.lockSession("k", nil)
+
+	waited := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		unlock := e.lockSession("k", func() { waited <- struct{}{} })
+		unlock()
+		close(done)
+	}()
+
+	select {
+	case <-waited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ожидающий запрос не получил уведомление об очереди")
+	}
+
+	// Освобождение первого пропускает второго.
+	first()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("второй запрос не дождался освобождения")
 	}
 }
 

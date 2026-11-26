@@ -126,6 +126,7 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	input.OnServerTool = func(string) { sw.Start() }
+	input.OnQueued = func() { sw.Start() }
 	reply, err := h.Engine.Execute(r.Context(), input)
 	if err != nil {
 		ge := gateway.FromError(err)
