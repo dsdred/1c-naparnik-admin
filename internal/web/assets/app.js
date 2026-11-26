@@ -1560,6 +1560,15 @@ API Key: <токен nr_...>
 Model: ${c.model}`,
   },
   {
+    id: 'qoder',
+    name: 'Qoder',
+    note: 'свой OpenAI-совместимый провайдер',
+    verified: true,
+    text: (c) => `Base URL: ${c.openai_url}
+API Key: <токен nr_...>
+Model: ${c.model}`,
+  },
+  {
     id: 'claude',
     name: 'Claude Code',
     note: 'переменные окружения',
