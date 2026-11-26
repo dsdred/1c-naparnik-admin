@@ -19,8 +19,18 @@ import (
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "путь к файлу конфигурации")
+	showVersion := flag.Bool("version", false, "показать версию и выйти")
 	flag.Usage = usage
 	flag.Parse()
+
+	if *showVersion {
+		printVersion()
+		return
+	}
+
+	// Версия видна и снаружи: /healthz отдаёт её вместе со статусом, чтобы
+	// после замены бинарника на другом хосте можно было проверить деплой.
+	app.BuildVersion = version
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	args := flag.Args()
@@ -41,6 +51,8 @@ func main() {
 		err = runDoctor(*configPath, log)
 	case "service":
 		err = runServiceCmd(*configPath, log, args[1:])
+	case "version":
+		printVersion()
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -65,6 +77,7 @@ func usage() {
   naparnik-admin [-config config.yaml] doctor           проверить конфигурацию и базу
   naparnik-admin [-config config.yaml] service install  установить службу Windows
   naparnik-admin service start|stop|status|remove        управление службой
+  naparnik-admin version                                показать версию сборки
 
 Переменные окружения:
   NAPARNIK_ADMIN_DATA_DIR     каталог данных (по умолчанию ./data)

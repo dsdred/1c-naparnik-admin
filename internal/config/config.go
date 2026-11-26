@@ -209,6 +209,20 @@ func (c *Config) GatewayAddrs() []string {
 	return out
 }
 
+// GatewayListener возвращает первый включённый gateway-слушатель: по нему
+// собираются сниппеты подключения, в том числе схема http/https.
+func (c *Config) GatewayListener() (Listener, bool) {
+	for _, l := range c.Listeners {
+		if l.Kind == KindGateway && !l.Disabled {
+			return l, true
+		}
+	}
+	return Listener{}, false
+}
+
+// TLS сообщает, работает ли слушатель по HTTPS.
+func (l Listener) TLS() bool { return l.CertFile != "" && l.KeyFile != "" }
+
 // IsLoopback сообщает, слушает ли адрес только локальную машину.
 func IsLoopback(addr string) bool {
 	host := addr

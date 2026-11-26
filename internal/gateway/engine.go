@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -198,12 +199,53 @@ func (e *Engine) Execute(ctx context.Context, in Input) (*Reply, error) {
 		return nil, &Error{Status: 499, Code: "client_closed", Message: "клиент закрыл соединение, пока запрос ждал очереди"}
 	}
 
+	reply, err := e.executeLocked(ctx, in, sessionKey, sticky, false)
+	if err == nil || !conversationGone(err) || (reply != nil && len(reply.Parts) > 0) {
+		return reply, err
+	}
+	// Напарник не нашёл диалог: он удалён на сервере или создан другим ключом.
+	// Оставлять такую привязку нельзя — сессия клиента становится вечно «сломанной»,
+	// поэтому забываем её и один раз повторяем запрос в новом диалоге с полной историей.
+	_ = e.store.DeleteSession(ctx, in.Token.ID, in.Protocol, sessionKey)
+	_ = e.store.DeleteCheckpoints(ctx, in.Token.ID, in.Protocol, sessionKey)
+	return e.executeLocked(ctx, in, sessionKey, sticky, true)
+}
+
+// executeLocked выполняет запрос в уже занятой сессии. forceNew создаёт новый
+// диалог, даже если привязка есть.
+func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string, sticky, forceNew bool) (*Reply, error) {
 	binding, err := e.store.GetSession(ctx, in.Token.ID, in.Protocol, sessionKey)
 	expired := err == nil && e.cfg.SessionTTL.D() > 0 && timeSince(binding.UpdatedAt) > e.cfg.SessionTTL.D()
-	newConversation := errors.Is(err, store.ErrNotFound) || expired || binding.Conversation == ""
+	hasBinding := err == nil && !expired && binding.Conversation != ""
+
+	// Ищем в присланной истории последнюю реплику ассистента и её контрольную точку:
+	// продолжаем ту ветку, которую видит клиент, а не «последнюю отправленную».
+	// Клиент вправе откатить, отредактировать или перегенерировать реплику.
+	anchorFP, anchorIdx := anchorOf(in.Turns)
+	var anchor store.Checkpoint
+	haveAnchor := false
+	if anchorFP != "" {
+		if cp, ok, cerr := e.store.FindCheckpoint(ctx, in.Token.ID, in.Protocol, sessionKey, anchorFP); cerr == nil && ok {
+			anchor, haveAnchor = cp, true
+		}
+	}
+
+	newConversation := forceNew
+	switch {
+	case newConversation:
+	case haveAnchor:
+		// Продолжаем ветку из точки.
+	case hasBinding && anchorFP == "":
+		// Клиент не прислал историю ассистента — продолжаем привязку, как раньше.
+	default:
+		// История расходится с тем, что мы отправляли (откат, правка, новый чат
+		// или старая база без точек): продолжать нельзя, начинаем новый диалог.
+		newConversation = true
+	}
 
 	fingerprint := fingerprintOf(in.Turns)
-	if !newConversation && sticky && binding.Fingerprint != "" && binding.Fingerprint != fingerprint {
+	if !newConversation && !haveAnchor && sticky && binding.Fingerprint != "" && binding.Fingerprint != fingerprint {
+		// Sticky-сессия без точек: клиент начал другой чат.
 		newConversation = true
 	}
 
@@ -218,21 +260,30 @@ func (e *Engine) Execute(ctx context.Context, in Input) (*Reply, error) {
 
 	var conversation string
 	var parent *string
-	if newConversation {
+	turns := in.Turns
+	switch {
+	case newConversation:
 		conversation, err = e.client.CreateConversation(ctx, in.Key, "ru", "1c", "ru")
 		if err != nil {
 			return nil, err
 		}
-	} else {
+	case haveAnchor:
+		conversation = anchor.Conversation
+		if anchor.Parent != "" {
+			p := anchor.Parent
+			parent = &p
+		}
+		// Отправляем только хвост после реплики, которую клиент уже видел.
+		turns = in.Turns[anchorIdx+1:]
+		if len(turns) == 0 {
+			turns = in.Turns[len(in.Turns)-1:]
+		}
+	default:
 		conversation = binding.Conversation
 		if binding.Parent != "" {
 			p := binding.Parent
 			parent = &p
 		}
-	}
-
-	turns := in.Turns
-	if !newConversation {
 		turns = tailAfterLastAssistant(turns)
 		if len(turns) == 0 {
 			// Клиент повторил уже отправленную историю — не генерируем заново.
@@ -240,7 +291,23 @@ func (e *Engine) Execute(ctx context.Context, in Input) (*Reply, error) {
 		}
 	}
 
-	groups := groupTurns(turns)
+	if newConversation {
+		// В новый диалог нельзя отправить role:tool: там ещё нет реплики ассистента
+		// с tool_calls, и Напарник отвечает 422 «tool responses can only be provided
+		// for existing tool calls». Поэтому результаты инструментов переносим текстом.
+		turns = flattenToolTurns(turns)
+	}
+
+	var groups []Turn
+	if newConversation {
+		// Историю засеваем без генерации, а по последней реплике пользователя
+		// генерируем ответ. Без разделения вся история склеивается в один текст,
+		// и модель отвечает на «простыню» вместо последнего вопроса.
+		seed, last := splitLastUser(turns)
+		groups = append(groupTurns(seed), groupTurns(last)...)
+	} else {
+		groups = groupTurns(turns)
+	}
 
 	reply := &Reply{}
 	var lastUUID string
@@ -375,6 +442,19 @@ func (e *Engine) Execute(ctx context.Context, in Input) (*Reply, error) {
 				}
 			}
 		}
+	}
+
+	// Контрольная точка: по отпечатку этого ответа следующий запрос найдёт,
+	// в какой ветке он находится, даже если клиент откатит или поправит историю.
+	if text, calls := reply.Text(), reply.ToolCalls(); strings.TrimSpace(text) != "" || len(calls) > 0 {
+		_ = e.store.SaveCheckpoint(ctx, store.Checkpoint{
+			TokenID:      in.Token.ID,
+			Protocol:     in.Protocol,
+			SessionID:    sessionKey,
+			Fingerprint:  answerDigest(text, calls),
+			Conversation: conversation,
+			Parent:       lastUUID,
+		})
 	}
 
 	if len(toolMap) > 0 {
@@ -516,6 +596,112 @@ func resolveSessionKey(sessionID string, turns []Turn) (key string, sticky bool)
 		return "sticky:" + fp, true
 	}
 	return "sticky", true
+}
+
+// splitLastUser отделяет последнюю реплику пользователя от истории. История до неё
+// засевается без генерации, а по последней реплике генерируется ответ.
+func splitLastUser(turns []Turn) (seed, last []Turn) {
+	for i := len(turns) - 1; i >= 0; i-- {
+		if turns[i].Role == RoleUser && strings.TrimSpace(turns[i].Text) != "" {
+			return turns[:i], turns[i:]
+		}
+	}
+	return nil, turns
+}
+
+// flattenToolTurns превращает результаты инструментов в текст пользователя.
+// В новый диалог их нельзя отправить как role:tool — там ещё нет реплики
+// ассистента с tool_calls, и Напарник отклоняет запрос с 422 validation
+// («tool responses can only be provided for existing tool calls»).
+func flattenToolTurns(turns []Turn) []Turn {
+	out := make([]Turn, 0, len(turns))
+	for _, t := range turns {
+		if t.Role != RoleTool {
+			out = append(out, t)
+			continue
+		}
+		parts := make([]string, 0, len(t.Results))
+		for _, r := range t.Results {
+			content := ""
+			switch v := r.Content.(type) {
+			case nil:
+			case string:
+				content = v
+			default:
+				if data, err := json.Marshal(v); err == nil {
+					content = string(data)
+				}
+			}
+			parts = append(parts, "Результат инструмента "+r.ToolCallID+":\n"+content)
+		}
+		if len(parts) == 0 {
+			continue
+		}
+		out = append(out, Turn{Role: RoleUser, Text: strings.Join(parts, "\n\n")})
+	}
+	return out
+}
+
+// answerDigest считает отпечаток ответа ассистента: текст и вызовы инструментов.
+// Один и тот же отпечаток получается и из нашего Reply, и из реплики, которую
+// клиент прислал обратно, — поэтому по нему находится контрольная точка.
+func answerDigest(text string, calls []naparnik.ToolCall) string {
+	h := sha256.New()
+	_, _ = h.Write([]byte(strings.TrimSpace(text)))
+	for _, c := range calls {
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(c.ID))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(c.Function.Name))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(normalizeArgs(c.Function.Arguments)))
+	}
+	return hex.EncodeToString(h.Sum(nil))[:32]
+}
+
+// normalizeArgs приводит аргументы инструмента к устойчивому виду: клиенты
+// возвращают тот же JSON с другим порядком ключей и пробелами.
+func normalizeArgs(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	var v any
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return raw
+	}
+	// json.Marshal сортирует ключи map — представление стабильно.
+	data, err := json.Marshal(v)
+	if err != nil {
+		return raw
+	}
+	return string(data)
+}
+
+// anchorOf находит в истории клиента последнюю реплику ассистента: по ней
+// определяется, какую ветку диалога продолжать.
+func anchorOf(turns []Turn) (fingerprint string, index int) {
+	for i := len(turns) - 1; i >= 0; i-- {
+		t := turns[i]
+		if t.Role != RoleAssistant {
+			continue
+		}
+		if strings.TrimSpace(t.Text) == "" && len(t.Calls) == 0 {
+			continue
+		}
+		return answerDigest(t.Text, t.Calls), i
+	}
+	return "", -1
+}
+
+// conversationGone сообщает, что Напарник не нашёл диалог или сообщение:
+// сохранённая привязка недействительна, нужен новый диалог.
+func conversationGone(err error) bool {
+	var fe *naparnik.Fault
+	if errors.As(err, &fe) {
+		return fe.Status == http.StatusNotFound || fe.Code == "resource_not_found"
+	}
+	return false
 }
 
 // fingerprintOf считает отпечаток первого пользовательского сообщения —

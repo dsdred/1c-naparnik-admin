@@ -137,3 +137,34 @@ func TestGatewayAddrsSkipsDisabled(t *testing.T) {
 		t.Fatalf("в сниппеты должны попадать только включённые шлюзы, получено %v", got)
 	}
 }
+
+// TestGatewayListener проверяет выбор слушателя для сниппетов и признак TLS:
+// от них зависит схема http/https в инструкциях подключения.
+func TestGatewayListener(t *testing.T) {
+	cfg := Default()
+	cfg.Listeners = []Listener{
+		{Addr: "127.0.0.1:5001", Kind: KindGateway, Disabled: true},
+		{Addr: "127.0.0.1:5002", Kind: KindAdmin},
+		{Addr: "0.0.0.0:5003", Kind: KindGateway, CertFile: "s.crt", KeyFile: "s.key"},
+	}
+	l, ok := cfg.GatewayListener()
+	if !ok {
+		t.Fatal("включённый шлюз должен находиться")
+	}
+	if l.Addr != "0.0.0.0:5003" {
+		t.Fatalf("ожидался первый включённый шлюз, получен %s", l.Addr)
+	}
+	if !l.TLS() {
+		t.Fatal("пара cert/key должна означать HTTPS")
+	}
+
+	if (Listener{Addr: "127.0.0.1:5004", Kind: KindGateway}).TLS() {
+		t.Fatal("без сертификата слушатель работает по HTTP")
+	}
+
+	empty := Default()
+	empty.Listeners = []Listener{{Addr: "127.0.0.1:5005", Kind: KindAdmin}}
+	if _, ok := empty.GatewayListener(); ok {
+		t.Fatal("без gateway-слушателей выбор должен быть пустым")
+	}
+}

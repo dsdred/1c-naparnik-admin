@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -91,6 +92,68 @@ func TestValidateListeners(t *testing.T) {
 	bad := []config.Listener{{Addr: "не адрес", Kind: config.KindAdmin}}
 	if err := validateListeners(bad); err == nil {
 		t.Fatal("неверный адрес должен отклоняться")
+	}
+}
+
+// TestValidateTLSFiles проверяет пару путей к сертификату: один путь без другого
+// или отсутствующий файл не должны молча превращаться в HTTP.
+func TestValidateTLSFiles(t *testing.T) {
+	dir := t.TempDir()
+	cert := filepath.Join(dir, "server.crt")
+	key := filepath.Join(dir, "server.key")
+	for _, p := range []string{cert, key} {
+		if err := os.WriteFile(p, []byte("test"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	base := config.Listener{Addr: "127.0.0.1:47831", Kind: config.KindGateway}
+
+	plain := base
+	if err := validateTLSFiles(plain); err != nil {
+		t.Fatalf("HTTP-слушатель без сертификата допустим: %v", err)
+	}
+
+	onlyCert := base
+	onlyCert.CertFile = cert
+	if err := validateTLSFiles(onlyCert); err == nil {
+		t.Fatal("сертификат без ключа должен отклоняться")
+	}
+
+	onlyKey := base
+	onlyKey.KeyFile = key
+	if err := validateTLSFiles(onlyKey); err == nil {
+		t.Fatal("ключ без сертификата должен отклоняться")
+	}
+
+	missing := base
+	missing.CertFile = cert
+	missing.KeyFile = filepath.Join(dir, "нет-такого.key")
+	if err := validateTLSFiles(missing); err == nil {
+		t.Fatal("отсутствующий файл должен отклоняться")
+	}
+
+	isDir := base
+	isDir.CertFile = dir
+	isDir.KeyFile = key
+	if err := validateTLSFiles(isDir); err == nil {
+		t.Fatal("каталог вместо файла должен отклоняться")
+	}
+
+	both := base
+	both.CertFile = cert
+	both.KeyFile = key
+	if err := validateTLSFiles(both); err != nil {
+		t.Fatalf("полная пара должна приниматься: %v", err)
+	}
+
+	// Валидация набора слушателей должна включать проверку TLS.
+	set := []config.Listener{
+		{Addr: "127.0.0.1:47830", Kind: config.KindAdmin},
+		{Addr: "127.0.0.1:47831", Kind: config.KindGateway, CertFile: cert},
+	}
+	if err := validateListeners(set); err == nil {
+		t.Fatal("набор с неполной TLS-парой должен отклоняться")
 	}
 }
 

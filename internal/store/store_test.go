@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -247,5 +248,70 @@ func TestLogPromptAndPurge(t *testing.T) {
 	_, total, _ = st.QueryLog(ctx, LogFilter{})
 	if total != 0 {
 		t.Fatalf("журнал должен быть пуст, осталось %d", total)
+	}
+}
+
+func TestCheckpointRoundTrip(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	keyID, err := st.CreateKey(ctx, "Ключ", "…abcd", []byte{1})
+	if err != nil {
+		t.Fatalf("ключ: %v", err)
+	}
+	tokenID, err := st.CreateToken(ctx, Token{KeyID: keyID, Name: "IDE", Prefix: "nr_abc", Enabled: true}, "hash", "enc")
+	if err != nil {
+		t.Fatalf("токен: %v", err)
+	}
+
+	cp := Checkpoint{
+		TokenID: tokenID, Protocol: "openai", SessionID: "s1",
+		Fingerprint: "fp-1", Conversation: "conv-1", Parent: "msg-1",
+	}
+	if err := st.SaveCheckpoint(ctx, cp); err != nil {
+		t.Fatalf("сохранение точки: %v", err)
+	}
+	got, ok, err := st.FindCheckpoint(ctx, tokenID, "openai", "s1", "fp-1")
+	if err != nil || !ok {
+		t.Fatalf("точка не найдена: ok=%v err=%v", ok, err)
+	}
+	if got.Conversation != "conv-1" || got.Parent != "msg-1" {
+		t.Fatalf("неверные поля точки: %+v", got)
+	}
+	if _, ok, _ := st.FindCheckpoint(ctx, tokenID, "openai", "s1", "нет-такой"); ok {
+		t.Fatal("неизвестный отпечаток не должен находиться")
+	}
+	// Другая сессия того же токена точки не видит.
+	if _, ok, _ := st.FindCheckpoint(ctx, tokenID, "openai", "s2", "fp-1"); ok {
+		t.Fatal("точка не должна протекать в чужую сессию")
+	}
+
+	// Обрезка: держим только checkpointLimit последних точек.
+	for i := 0; i < checkpointLimit+10; i++ {
+		cp := Checkpoint{
+			TokenID: tokenID, Protocol: "openai", SessionID: "s1",
+			Fingerprint: fmt.Sprintf("fp-%d", i), Conversation: "conv-1", Parent: "msg-1",
+		}
+		if err := st.SaveCheckpoint(ctx, cp); err != nil {
+			t.Fatalf("точка %d: %v", i, err)
+		}
+	}
+	n, err := st.CountCheckpoints(ctx, tokenID, "openai", "s1")
+	if err != nil {
+		t.Fatalf("подсчёт точек: %v", err)
+	}
+	if n != checkpointLimit {
+		t.Fatalf("должно остаться %d точек, осталось %d", checkpointLimit, n)
+	}
+	// Самая свежая точка на месте.
+	if _, ok, _ := st.FindCheckpoint(ctx, tokenID, "openai", "s1", fmt.Sprintf("fp-%d", checkpointLimit+9)); !ok {
+		t.Fatal("свежая точка потерялась при обрезке")
+	}
+
+	if err := st.DeleteCheckpoints(ctx, tokenID, "openai", "s1"); err != nil {
+		t.Fatalf("удаление точек: %v", err)
+	}
+	if n, _ := st.CountCheckpoints(ctx, tokenID, "openai", "s1"); n != 0 {
+		t.Fatalf("точки должны быть удалены, осталось %d", n)
 	}
 }

@@ -9,6 +9,9 @@ const state = {
   settings: null,
   listeners: [],
   connect: null,
+  connectData: null,
+  connectSel: { client: 'cline', tokenId: null, addr: null },
+  connectSecrets: {},
   view: 'overview',
   keyID: null,
   usageRange: '24h',
@@ -185,6 +188,9 @@ function ddPick(id, item) {
   el.querySelector('.dd-label').textContent = item.textContent;
   el.querySelectorAll('.dd-item').forEach((b) => b.classList.toggle('active', b === item));
   ddCloseAll();
+  // Общий хук: страница может узнать о выборе через data-onchange на .dd.
+  const hook = el.dataset.onchange;
+  if (hook && typeof window[hook] === 'function') window[hook]();
 }
 
 function ddCloseAll() {
@@ -637,6 +643,7 @@ const ACTION_ICONS = {
   next: '<path d="M9.5 5l7 7-7 7"/>',
   eye: '<path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="3"/>',
   rotate: '<path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 3.5V9h-5.5"/>',
+  lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
   deltas: '<path d="M4 12h2.5M10.75 12h2.5M17.5 12H20"/>',
   final: '<rect x="4" y="7" width="16" height="10" rx="2" fill="currentColor" stroke="none" opacity=".45"/><rect x="4" y="7" width="16" height="10" rx="2"/>',
   auto: '<path d="M7 8h9"/><path d="M13 5l3 3-3 3"/><path d="M17 16H8"/><path d="M11 13l-3 3 3 3"/>',
@@ -657,7 +664,7 @@ function iconSvg(name) {
 // streamIcon — режим потока картинкой: пунктир (по кускам), блок (целиком), стрелки (по умолчанию).
 function streamIcon(mode) {
   if (mode === 'deltas') {
-    return `<span title="deltas — текст приходит по мере генерации">${iconSvg('deltas')}</span>`;
+    return `<span title="deltas — каждое подтверждённое сообщение сразу, по мере готовности">${iconSvg('deltas')}</span>`;
   }
   if (mode === 'final') {
     return `<span title="final — ответ приходит целиком в конце">${iconSvg('final')}</span>`;
@@ -921,7 +928,7 @@ async function renderTokens(main) {
         ${ddHTML('tmode', [
           { value: '', label: 'поток: как в настройках' },
           { value: 'final', label: 'final — цельным куском' },
-          { value: 'deltas', label: 'deltas — по мере генерации' },
+          { value: 'deltas', label: 'deltas — по мере готовности' },
         ], '', 'flex:1;min-width:200px')}
         <button class="btn" onclick="addToken()">Выпустить</button>
       </div>
@@ -1044,7 +1051,7 @@ function openTokenEdit(id) {
         <label>Поток${ddHTML('te_stream', [
           { value: '', label: 'как в настройках' },
           { value: 'final', label: 'final — цельным куском' },
-          { value: 'deltas', label: 'deltas — по мере генерации' },
+          { value: 'deltas', label: 'deltas — по мере готовности' },
         ], t.stream_mode || '', '')}</label>
       </div>
       <label style="display:block;margin-top:14px">Токен
@@ -1176,6 +1183,11 @@ async function renderLogs(main) {
   }
   if (res.total === 0) state.logOffset = 0;
 
+  // Записи и справочники держим в состоянии: карточка записи открывается по клику без запроса к серверу.
+  state.logEntries = res.entries;
+  state.logTokens = tokens;
+  state.logKeys = keys;
+
   const tokenName = (id) => (tokens.find((t) => t.id === id) || {}).name || ('#' + id);
   const cut = (s, n) => {
     const t = String(s || '');
@@ -1204,7 +1216,7 @@ async function renderLogs(main) {
 
     <section class="card settings-section">
       <div class="card-head">
-        <h2>Записи ${infoBtn('Страница показывает 50 записей. Выгрузка в CSV отдаёт весь журнал.', 'Про список записей')}</h2>
+        <h2>Записи ${infoBtn('Страница показывает 50 записей. Нажмите на строку, чтобы посмотреть подробности. Выгрузка в CSV отдаёт весь журнал.', 'Про список записей')}</h2>
         <span class="muted small">Всего записей: ${fmtNum(res.total)}</span>
         <span class="spacer"></span>
         ${res.total ? `<span class="muted small">${fmtNum(from)}–${fmtNum(to)} из ${fmtNum(res.total)}</span>` : ''}
@@ -1213,9 +1225,11 @@ async function renderLogs(main) {
         ${nextOff}
       </div>
       <table>
-        <thead><tr><th>Время</th><th>Токен</th><th>Запрос</th><th>Протокол</th><th>Статус</th><th>Токены</th><th>мс</th></tr></thead>
+        <thead><tr><th>Время</th><th>Токен</th><th>Запрос</th><th>Протокол</th><th>Статус</th><th>Токены</th><th>мс</th><th></th></tr></thead>
         <tbody>
-          ${res.entries.map((e) => `<tr>
+          ${res.entries.map((e) => `<tr class="row-click" tabindex="0"
+              onclick="openLogEntry(${e.id})"
+              onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openLogEntry(${e.id})}">
             <td class="small">${fmtTime(e.ts)}</td>
             <td class="small">${esc(tokenName(e.token_id))}</td>
             <td class="small log-prompt" title="${esc(e.prompt || '')}">${e.prompt
@@ -1227,7 +1241,8 @@ async function renderLogs(main) {
               : '<span class="badge ok">' + e.status + '</span>'}</td>
             <td class="small">${fmtNum(e.prompt_tokens + e.completion_tokens)}</td>
             <td class="small muted">${e.latency_ms}</td>
-          </tr>`).join('') || '<tr><td colspan="7" class="muted">Записей нет</td></tr>'}
+            <td class="small muted">${iconBtn('eye', 'Показать подробности записи', `openLogEntry(${e.id})`)}</td>
+          </tr>`).join('') || '<tr><td colspan="8" class="muted">Записей нет</td></tr>'}
         </tbody>
       </table>
     </section>`;
@@ -1275,6 +1290,88 @@ async function purgeLogs() {
     state.logOffset = 0;
     go('logs');
   } catch (e) { toast(e.message, true); }
+}
+
+/* ---------- карточка записи журнала ---------- */
+
+// fmtDateTime — полная дата и время: toLocaleString('ru-RU') ставит запятую между датой и временем.
+function fmtDateTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d)) return '—';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} `
+    + `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+// openLogEntry показывает подробности записи: полный вопрос и все метрики запроса.
+// Данные берём из уже загруженной страницы журнала, сервер не дёргаем.
+function openLogEntry(id) {
+  // Строка и кнопка «глаз» ведут в одно окно: второй вызов из всплытия клика игнорируем.
+  if (document.getElementById('log-modal')) return;
+  const e = (state.logEntries || []).find((x) => x.id === id);
+  if (!e) return;
+  const token = (state.logTokens || []).find((t) => t.id === e.token_id) || {};
+  const key = (state.logKeys || []).find((k) => k.id === e.key_id) || {};
+  const fact = (name, val) => `<div><span class="log-fact-k">${name}</span><span class="log-fact-v">${val}</span></div>`;
+  const tokenLabel = esc(token.name || '#' + e.token_id)
+    + (token.prefix ? ` <span class="muted">${esc(token.prefix)}</span>` : '');
+  const proto = esc(e.protocol || '—') + (e.stream ? ' · SSE' : '');
+  const truncated = (e.prompt || '').length >= 2000;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-backdrop';
+  wrap.id = 'log-modal';
+  wrap.innerHTML = `
+    <div class="modal log-detail">
+      <div class="row" style="align-items:center;margin-bottom:14px">
+        <h2 style="margin:0">Запрос #${e.id}</h2>
+        <span class="spacer"></span>
+        <span class="badge ${e.status >= 400 ? 'crit' : 'ok'}">${e.status}${e.error_type ? ' ' + esc(e.error_type) : ''}</span>
+      </div>
+      <div class="log-facts">
+        ${fact('Время', esc(fmtDateTime(e.ts)))}
+        ${fact('Токен', tokenLabel)}
+        ${fact('Ключ', esc(key.name || '#' + e.key_id))}
+        ${fact('Протокол', proto)}
+        ${fact('Модель', esc(e.model || '—'))}
+        ${fact('Токены запроса', fmtNum(e.prompt_tokens))}
+        ${fact('Токены ответа', fmtNum(e.completion_tokens))}
+        ${fact('Из кэша', fmtNum(e.cached_tokens))}
+        ${fact('Задержка', fmtNum(e.latency_ms) + ' мс')}
+        ${e.error_type ? fact('Ошибка', `<span style="color:var(--crit)">${esc(e.error_type)}</span>`) : ''}
+      </div>
+      <div class="row" style="align-items:center;margin:0 0 6px">
+        <h3 style="margin:0">Запрос</h3>
+        <span class="spacer"></span>
+        ${e.prompt ? iconBtn('copy', 'Копировать текст запроса', `copyLogPrompt(${e.id})`) : ''}
+      </div>
+      ${e.prompt
+        ? `<pre class="log-full">${esc(e.prompt)}</pre>`
+        : '<p class="muted small" style="margin:0">Текст запроса не сохранён — запрос отклонён до разбора тела.</p>'}
+      <p class="muted small" style="margin:8px 0 0">Последняя реплика пользователя${truncated
+        ? ', обрезана до 2000 символов' : ''}. Ответ модели в журнале не хранится.</p>
+      <div class="row" style="justify-content:flex-end;margin-top:18px">
+        <button class="btn" onclick="closeLogEntry()">Закрыть</button>
+      </div>
+    </div>`;
+  const onKey = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); closeLogEntry(); } };
+  wrap._onKey = onKey;
+  wrap.addEventListener('click', (ev) => { if (ev.target === wrap) closeLogEntry(); });
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(wrap);
+}
+
+function closeLogEntry() {
+  const el = document.getElementById('log-modal');
+  if (!el) return;
+  if (el._onKey) document.removeEventListener('keydown', el._onKey);
+  el.remove();
+}
+
+function copyLogPrompt(id) {
+  const e = (state.logEntries || []).find((x) => x.id === id);
+  if (e && e.prompt) copy(e.prompt);
 }
 
 /* ---------- слушатели ---------- */
@@ -1326,6 +1423,10 @@ function listenerRow(l, i, dup) {
   ];
   const addr = String(l.addr || '').trim();
   const clash = dup && dup.has(addr);
+  const tls = l.cert_file && l.key_file
+    ? ' <span class="badge ok" title="Слушатель работает по HTTPS">https</span>'
+    : '';
+  const tlsTitle = tls ? 'Изменить сертификат' : 'Включить HTTPS (сертификат)';
   return `<tr>
     <td>
       <label class="switch" title="${l.disabled ? 'Включить слушатель' : 'Выключить слушатель'}">
@@ -1334,9 +1435,65 @@ function listenerRow(l, i, dup) {
       </label>
     </td>
     <td><input value="${esc(l.addr)}" data-addr="${i}" class="${clash ? 'invalid' : ''}" style="width:100%"${clash ? ' title="Этот адрес уже занят другим включённым слушателем"' : ''}></td>
-    <td>${ddHTML('lkind-' + i, kinds, l.kind, '', 'data-kind="' + i + '"')}</td>
-    <td class="actions">${iconBtn('trash', 'Удалить слушатель', 'removeListenerRow(' + i + ')', 'danger')}</td>
+    <td>${ddHTML('lkind-' + i, kinds, l.kind, '', 'data-kind="' + i + '"')}${tls}</td>
+    <td class="actions">${iconBtn('lock', tlsTitle, 'listenerTLS(' + i + ')', tls ? 'ok' : '')}${iconBtn('trash', 'Удалить слушатель', 'removeListenerRow(' + i + ')', 'danger')}</td>
   </tr>`;
+}
+
+// listenerTLS открывает диалог с путями к сертификату и ключу. Пустая пара
+// означает HTTP; заполненная — HTTPS. Один путь без другого сервер не примет.
+function listenerTLS(i) {
+  syncListenerInputs();
+  const l = state.listeners[i];
+  if (!l) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-backdrop';
+  wrap.id = 'listener-tls-modal';
+  wrap.innerHTML = `
+    <div class="modal" style="max-width:560px">
+      <h2 style="margin-top:0">Сертификат для ${esc(l.addr || 'слушателя')}</h2>
+      <p class="muted" style="margin:0 0 14px">Пути к файлам на машине, где запущен сервис. Оба поля пустые — слушатель работает по HTTP. Заполнены оба — по HTTPS (TLS 1.2+).</p>
+      <label>Сертификат (PEM, цепочка)</label>
+      <input id="ltls-cert" value="${esc(l.cert_file || '')}" placeholder="C:\\certs\\server.crt" style="width:100%">
+      <label>Ключ (PEM, без пароля)</label>
+      <input id="ltls-key" value="${esc(l.key_file || '')}" placeholder="C:\\certs\\server.key" style="width:100%">
+      <p class="field-error" id="ltls-err" hidden></p>
+      <div class="row" style="justify-content:flex-end;margin-top:16px">
+        <button class="btn ghost" data-act="cancel">Отмена</button>
+        <button class="btn ghost" data-act="clear">Снять HTTPS</button>
+        <button class="btn" data-act="ok">Сохранить</button>
+      </div>
+    </div>`;
+  const close = () => wrap.remove();
+  wrap.addEventListener('click', (e) => {
+    if (e.target === wrap) return close();
+    const act = e.target.closest('[data-act]');
+    if (!act) return;
+    if (act.dataset.act === 'cancel') return close();
+    if (act.dataset.act === 'clear') {
+      delete l.cert_file;
+      delete l.key_file;
+      close();
+      paintListeners(document.getElementById('main'));
+      return toast('HTTPS снят — нажмите «Применить», чтобы сохранить');
+    }
+    const cert = wrap.querySelector('#ltls-cert').value.trim();
+    const key = wrap.querySelector('#ltls-key').value.trim();
+    const err = wrap.querySelector('#ltls-err');
+    if (!!cert !== !!key) {
+      err.textContent = 'Нужны оба файла — и сертификат, и ключ';
+      err.hidden = false;
+      return;
+    }
+    if (cert) { l.cert_file = cert; l.key_file = key; }
+    else { delete l.cert_file; delete l.key_file; }
+    close();
+    paintListeners(document.getElementById('main'));
+    toast(cert ? 'HTTPS настроен — нажмите «Применить»' : 'HTTPS снят — нажмите «Применить»');
+  });
+  document.body.appendChild(wrap);
+  const first = wrap.querySelector('#ltls-cert');
+  if (first) first.focus();
 }
 
 // syncListenerInputs переносит правки из полей ввода в state,
@@ -1357,10 +1514,16 @@ function addListenerRow() {
   paintListeners(document.getElementById('main'));
 }
 
-// listenerPayload собирает тело запроса из state, сохраняя выключенные слушатели.
+// listenerPayload собирает тело запроса из state, сохраняя выключенные слушатели
+// и пути к сертификату: иначе «Применить» стирал бы cert_file/key_file из конфига.
 function listenerPayload() {
   return state.listeners
-    .map((l) => ({ addr: String(l.addr || '').trim(), kind: l.kind, disabled: !!l.disabled }))
+    .map((l) => {
+      const out = { addr: String(l.addr || '').trim(), kind: l.kind, disabled: !!l.disabled };
+      if (l.cert_file) out.cert_file = l.cert_file;
+      if (l.key_file) out.key_file = l.key_file;
+      return out;
+    })
     .filter((l) => l.addr !== '');
 }
 
@@ -1435,7 +1598,7 @@ async function renderSettings(main) {
         <label>Режим потока по умолчанию
           ${ddHTML('s_stream', [
             { value: 'final', label: 'final — отдавать финальный текст' },
-            { value: 'deltas', label: 'deltas — по мере генерации' },
+            { value: 'deltas', label: 'deltas — по мере готовности' },
           ], s.stream_mode)}
         </label>
         <label>Порог авто-компактизации
@@ -1521,7 +1684,7 @@ const CONNECT_CLIENTS = [
     verified: true,
     text: (c) => `Provider: OpenAI Compatible
 Base URL: ${c.openai_url}
-API Key: <токен nr_...>
+API Key: ${c.token}
 Model: ${c.model}`,
   },
   {
@@ -1531,7 +1694,7 @@ Model: ${c.model}`,
     verified: false,
     text: (c) => `Provider: OpenAI Compatible
 Base URL: ${c.openai_url}
-API Key: <токен nr_...>
+API Key: ${c.token}
 Model: ${c.model}`,
   },
   {
@@ -1544,7 +1707,7 @@ Model: ${c.model}`,
     provider: openai
     model: ${c.model}
     apiBase: ${c.openai_url}
-    apiKey: <токен nr_...>`,
+    apiKey: ${c.token}`,
   },
   {
     id: 'zed',
@@ -1566,7 +1729,7 @@ Model: ${c.model}`,
     note: 'свой OpenAI-совместимый провайдер',
     verified: false,
     text: (c) => `Base URL: ${c.openai_url}
-API Key: <токен nr_...>
+API Key: ${c.token}
 Model: ${c.model}`,
   },
   {
@@ -1575,7 +1738,7 @@ Model: ${c.model}`,
     note: 'свой OpenAI-совместимый провайдер',
     verified: true,
     text: (c) => `Base URL: ${c.openai_url}
-API Key: <токен nr_...>
+API Key: ${c.token}
 Model: ${c.model}`,
   },
   {
@@ -1583,8 +1746,9 @@ Model: ${c.model}`,
     name: 'Claude Code',
     note: 'переменные окружения',
     verified: false,
+    proto: 'anthropic',
     text: (c) => `export ANTHROPIC_BASE_URL=${c.anthropic_url}
-export ANTHROPIC_API_KEY=<токен nr_...>
+export ANTHROPIC_API_KEY=${c.token}
 export ANTHROPIC_MODEL=${c.model}
 claude`,
   },
@@ -1607,8 +1771,9 @@ wire_api = "chat"`,
     name: 'Gemini CLI',
     note: 'переменные окружения',
     verified: false,
+    proto: 'gemini',
     text: (c) => `export GOOGLE_GEMINI_BASE_URL=${c.gemini_url}
-export GEMINI_API_KEY=<токен nr_...>
+export GEMINI_API_KEY=${c.token}
 gemini --model ${c.model}`,
   },
   {
@@ -1622,7 +1787,7 @@ gemini --model ${c.model}`,
       "npm": "@ai-sdk/openai-compatible",
       "options": {
         "baseURL": "${c.openai_url}",
-        "apiKey": "<токен nr_...>"
+        "apiKey": "${c.token}"
       },
       "models": { "${c.model}": { "name": "Напарник" } }
     }
@@ -1635,11 +1800,16 @@ gemini --model ${c.model}`,
     note: 'быстрый тест из консоли',
     verified: false,
     text: (c) => `curl ${c.openai_url}/chat/completions \\
-  -H "Authorization: Bearer <токен nr_...>" \\
+  -H "Authorization: Bearer ${c.token}" \\
   -H "Content-Type: application/json" \\
   -d '{"model":"${c.model}","messages":[{"role":"user","content":"Привет"}]}'`,
   },
 ];
+
+// Клиенты без явного протокола работают через OpenAI-совместимый эндпоинт.
+CONNECT_CLIENTS.forEach((cl) => { if (!cl.proto) cl.proto = 'openai'; });
+
+const CONNECT_PROTO_NAMES = { openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Gemini' };
 
 function connectBadge(ok) {
   return ok
@@ -1647,34 +1817,170 @@ function connectBadge(ok) {
     : '<span class="badge">Не проверено</span>';
 }
 
-// copyConnect копирует инструкцию клиента с подставленными адресами.
-function copyConnect(id) {
-  const cl = CONNECT_CLIENTS.find((x) => x.id === id);
-  if (cl && state.connect) copy(cl.text(state.connect));
+// connectTokens — токены, которые можно выбрать: включённые и не отозванные.
+function connectTokens() {
+  const all = (state.connectData && state.connectData.tokens) || [];
+  return all.filter((t) => t.enabled && !t.revoked_at);
+}
+
+// splitAddr разбирает адрес слушателя на хост и порт, включая вид [::1]:47831.
+function splitAddr(addr) {
+  const v6 = /^\[(.*)\]:(\d+)$/.exec(addr);
+  if (v6) return { host: v6[1], port: v6[2] };
+  const i = addr.lastIndexOf(':');
+  if (i < 0) return null;
+  return { host: addr.slice(0, i), port: addr.slice(i + 1) };
+}
+
+// connectAddrs — адреса включённых gateway-слушателей. 0.0.0.0 и :: заменяем на
+// 127.0.0.1: клиент обычно на этой же машине, а из сети подойдёт адрес сервера.
+function connectAddrs() {
+  const list = ((state.connectData && state.connectData.listeners) || [])
+    .filter((l) => !l.disabled && l.kind === 'gateway');
+  const out = [];
+  list.forEach((l) => {
+    const addr = String(l.addr || '').trim();
+    const parts = addr && splitAddr(addr);
+    if (!parts) return;
+    const anyHost = parts.host === '0.0.0.0' || parts.host === '::' || parts.host === '';
+    // Слушатель на всех интерфейсах: из сети клиент идёт по имени машины, а не по 127.0.0.1.
+    const lanHost = (state.connect && state.connect.host) || '127.0.0.1';
+    // Схему берём у слушателя: на HTTPS-порту сниппет с http:// не заработает.
+    const scheme = l.cert_file && l.key_file ? 'https' : 'http';
+    const value = scheme + '://' + (anyHost ? lanHost : parts.host) + ':' + parts.port;
+    if (out.some((a) => a.value === value)) return;
+    out.push({ value, label: (anyHost ? addr + ' — из локальной сети' : addr) + (scheme === 'https' ? ' (https)' : '') });
+  });
+  if (!out.length && state.connect && state.connect.base_url) {
+    out.push({ value: state.connect.base_url, label: state.connect.base_url });
+  }
+  return out;
+}
+
+// connectTokenValue возвращает подставляемое значение токена: расшифрованное,
+// префикс (если значение не сохранено) или плейсхолдер.
+function connectTokenValue() {
+  const t = connectTokens().find((x) => String(x.id) === String(state.connectSel.tokenId));
+  if (!t) return '<токен nr_...>';
+  if (state.connectSecrets[t.id]) return state.connectSecrets[t.id];
+  return t.secret_available ? '<токен nr_...>' : '<токен ' + t.prefix + '…>';
+}
+
+function connectCtx() {
+  const addrs = connectAddrs();
+  const addr = addrs.find((a) => a.value === state.connectSel.addr) || addrs[0];
+  const base = (addr && addr.value) || (state.connect && state.connect.base_url) || 'http://127.0.0.1:47831';
+  return {
+    base_url: base,
+    openai_url: base + '/v1',
+    anthropic_url: base,
+    gemini_url: base,
+    model: (state.connect && state.connect.model) || 'naparnik',
+    token: connectTokenValue(),
+  };
+}
+
+// revealConnectToken расшифровывает значение токена один раз и запоминает его.
+async function revealConnectToken(id) {
+  if (!id || Object.prototype.hasOwnProperty.call(state.connectSecrets, id)) return;
+  state.connectSecrets[id] = '';
+  try {
+    const res = await api('/api/tokens/' + id + '/reveal', { method: 'POST' });
+    state.connectSecrets[id] = res.token || '';
+  } catch (_) { /* значение недоступно — останется плейсхолдер */ }
+}
+
+function pickConnectClient(id) {
+  state.connectSel.client = id;
+  const main = document.getElementById('main');
+  if (main) paintConnect(main);
+}
+
+// connectChanged вызывается селекторами мастера через data-onchange.
+async function connectChanged() {
+  const tEl = document.getElementById('cc_token');
+  const aEl = document.getElementById('cc_addr');
+  if (tEl) state.connectSel.tokenId = tEl.dataset.value;
+  if (aEl) state.connectSel.addr = aEl.dataset.value;
+  await revealConnectToken(state.connectSel.tokenId);
+  const main = document.getElementById('main');
+  if (main) paintConnect(main);
+}
+
+// copyConnect копирует инструкцию выбранного клиента с токеном и адресом.
+function copyConnect() {
+  const cl = CONNECT_CLIENTS.find((x) => x.id === state.connectSel.client);
+  if (cl) copy(cl.text(connectCtx()));
 }
 
 async function renderConnect(main) {
-  const c = await api('/api/connect');
-  state.connect = c;
+  const [connect, tokens, listeners] = await Promise.all([
+    api('/api/connect'), api('/api/tokens'), api('/api/listeners'),
+  ]);
+  state.connect = connect;
+  state.connectData = { tokens, listeners };
+
+  const sel = state.connectSel;
+  if (!CONNECT_CLIENTS.some((cl) => cl.id === sel.client)) sel.client = CONNECT_CLIENTS[0].id;
+  const list = connectTokens();
+  if (!list.some((t) => String(t.id) === String(sel.tokenId))) {
+    sel.tokenId = list.length ? String(list[0].id) : null;
+  }
+  await revealConnectToken(sel.tokenId);
+  const addrs = connectAddrs();
+  if (!addrs.some((a) => a.value === sel.addr)) sel.addr = addrs.length ? addrs[0].value : null;
+  paintConnect(main);
+}
+
+function paintConnect(main) {
+  const sel = state.connectSel;
+  const cl = CONNECT_CLIENTS.find((x) => x.id === sel.client) || CONNECT_CLIENTS[0];
+  const tokens = connectTokens();
+  const addrs = connectAddrs();
   const done = CONNECT_CLIENTS.filter((x) => x.verified).length;
 
+  const tokenOpts = tokens.length
+    ? tokens.map((t) => ({
+      value: String(t.id),
+      label: t.name + ' — ' + t.prefix + (t.provider ? ' · ' + (CONNECT_PROTO_NAMES[t.provider] || t.provider) : ''),
+    }))
+    : [{ value: '', label: 'токенов нет' }];
+  const addrOpts = addrs.length ? addrs : [{ value: '', label: 'слушателей нет' }];
+
+  const token = tokens.find((t) => String(t.id) === String(sel.tokenId));
+  const warnings = [];
+  if (!tokens.length) {
+    warnings.push(`<p class="muted small">Токенов пока нет — <button type="button" class="btn ghost small" onclick="go('tokens')">выпустить токен</button>. В инструкции останется плейсхолдер.</p>`);
+  } else if (token && !token.secret_available) {
+    warnings.push(`<p class="muted small">У токена «${esc(token.name)}» значение не сохранено — вставьте его из диалога выпуска.</p>`);
+  }
+  const proto = token && token.provider ? (token.provider === 'responses' ? 'openai' : token.provider) : '';
+  if (proto && proto !== cl.proto) {
+    warnings.push(`<p class="small" style="color:var(--warn)">Токен ограничен протоколом «${esc(CONNECT_PROTO_NAMES[proto] || proto)}», а ${esc(cl.name)} работает через ${esc(CONNECT_PROTO_NAMES[cl.proto])}. Возьмите токен без ограничения или с нужным протоколом.</p>`);
+  }
+
   main.innerHTML = `
-    <h1>Подключение ${infoBtn('Базовый адрес взят из первого включённого gateway-слушателя. Токен выпускается в разделе «Токены». Значок «Проверено» ставится после реального подключения клиента.', 'Про подключение')}</h1>
+    <h1>Подключение ${infoBtn('Выберите IDE, токен и адрес шлюза — инструкция соберётся сама. Значок «Проверено» ставится после реального подключения клиента.', 'Про подключение')}</h1>
     <p class="muted small">Проверено: ${done} из ${CONNECT_CLIENTS.length}. Остальные инструкции рабочие, но в этих клиентах ещё не подтверждены.</p>
-    <div class="grid cols2">
-      ${CONNECT_CLIENTS.map((cl) => {
-        const code = cl.text(c);
-        return `<section class="card settings-section">
-          <div class="card-head">
-            <h2>${esc(cl.name)} ${connectBadge(cl.verified)}</h2>
-            <span class="spacer"></span>
-            ${iconBtn('copy', 'Копировать инструкцию', `copyConnect('${cl.id}')`)}
-          </div>
-          <div class="muted small" style="margin:-6px 0 6px">${esc(cl.note)}</div>
-          <pre>${esc(code)}</pre>
-        </section>`;
-      }).join('')}
-    </div>`;
+    <div class="tiles">
+      ${CONNECT_CLIENTS.map((x) => `<button type="button" class="tile${x.id === cl.id ? ' active' : ''}" onclick="pickConnectClient('${x.id}')">
+        <span class="tile-head"><span class="tile-name">${esc(x.name)}</span>${connectBadge(x.verified)}</span>
+        <span class="tile-note">${esc(x.note)}</span>
+      </button>`).join('')}
+    </div>
+    <section class="card settings-section">
+      <div class="card-head">
+        <h2>${esc(cl.name)} ${connectBadge(cl.verified)}</h2>
+        <span class="spacer"></span>
+        ${iconBtn('copy', 'Копировать инструкцию', 'copyConnect()')}
+      </div>
+      <div class="grid cols2">
+        <label>Токен${ddHTML('cc_token', tokenOpts, sel.tokenId == null ? '' : String(sel.tokenId), '', 'data-onchange="connectChanged"')}</label>
+        <label>Подключение${ddHTML('cc_addr', addrOpts, sel.addr || '', '', 'data-onchange="connectChanged"')}</label>
+      </div>
+      ${warnings.join('')}
+      <pre>${esc(cl.text(connectCtx()))}</pre>
+    </section>`;
 }
 
 /* ---------- старт ---------- */

@@ -166,6 +166,17 @@ CREATE TABLE IF NOT EXISTS sessions (
 	updated_at INTEGER NOT NULL,
 	PRIMARY KEY (token_id, protocol, session_id)
 );
+CREATE TABLE IF NOT EXISTS session_checkpoints (
+	token_id INTEGER NOT NULL REFERENCES tokens(id) ON DELETE CASCADE,
+	protocol TEXT NOT NULL,
+	session_id TEXT NOT NULL,
+	fingerprint TEXT NOT NULL,
+	conversation TEXT NOT NULL,
+	parent TEXT NOT NULL DEFAULT '',
+	created_at INTEGER NOT NULL,
+	PRIMARY KEY (token_id, protocol, session_id, fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON session_checkpoints(token_id, protocol, session_id, created_at);
 CREATE TABLE IF NOT EXISTS budget_samples (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	key_id INTEGER NOT NULL REFERENCES naparnik_keys(id) ON DELETE CASCADE,
@@ -493,6 +504,86 @@ func (s *Store) SaveSession(ctx context.Context, ss Session) error {
 func (s *Store) DeleteSession(ctx context.Context, tokenID int64, protocol, sessionID string) error {
 	_, err := s.db.ExecContext(ctx,
 		`DELETE FROM sessions WHERE token_id=? AND protocol=? AND session_id=?`, tokenID, protocol, sessionID)
+	return err
+}
+
+// ---------- контрольные точки истории ----------
+
+// Checkpoint — отпечаток реплики ассистента и место, где эта реплика находится
+// в диалоге Напарника. Клиент может откатить или отредактировать историю, поэтому
+// продолжать «последний отправленный» диалог вслепую нельзя: точку ищем по тому,
+// что клиент реально прислал.
+type Checkpoint struct {
+	TokenID      int64     `json:"token_id"`
+	Protocol     string    `json:"protocol"`
+	SessionID    string    `json:"session_id"`
+	Fingerprint  string    `json:"fingerprint"`
+	Conversation string    `json:"conversation"`
+	Parent       string    `json:"parent"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// checkpointLimit — сколько последних контрольных точек храним на одну сессию.
+const checkpointLimit = 64
+
+// SaveCheckpoint запоминает точку и обрезает историю сессии до checkpointLimit.
+func (s *Store) SaveCheckpoint(ctx context.Context, cp Checkpoint) error {
+	now := time.Now().Unix()
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO session_checkpoints(token_id, protocol, session_id, fingerprint, conversation, parent, created_at)
+		 VALUES(?,?,?,?,?,?,?)
+		 ON CONFLICT(token_id, protocol, session_id, fingerprint) DO UPDATE SET
+		   conversation=excluded.conversation, parent=excluded.parent, created_at=excluded.created_at`,
+		cp.TokenID, cp.Protocol, cp.SessionID, cp.Fingerprint, cp.Conversation, cp.Parent, now); err != nil {
+		return err
+	}
+	// Держим только свежие точки: иначе длинный чат растёт без предела.
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM session_checkpoints
+		 WHERE token_id=? AND protocol=? AND session_id=? AND fingerprint NOT IN (
+		   SELECT fingerprint FROM session_checkpoints
+		   WHERE token_id=? AND protocol=? AND session_id=?
+		   ORDER BY created_at DESC, rowid DESC LIMIT ?)`,
+		cp.TokenID, cp.Protocol, cp.SessionID,
+		cp.TokenID, cp.Protocol, cp.SessionID, checkpointLimit)
+	return err
+}
+
+// FindCheckpoint ищет точку по отпечатку реплики ассистента.
+func (s *Store) FindCheckpoint(ctx context.Context, tokenID int64, protocol, sessionID, fingerprint string) (Checkpoint, bool, error) {
+	var cp Checkpoint
+	var created int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT token_id, protocol, session_id, fingerprint, conversation, parent, created_at
+		 FROM session_checkpoints
+		 WHERE token_id=? AND protocol=? AND session_id=? AND fingerprint=?`,
+		tokenID, protocol, sessionID, fingerprint).
+		Scan(&cp.TokenID, &cp.Protocol, &cp.SessionID, &cp.Fingerprint, &cp.Conversation, &cp.Parent, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return cp, false, nil
+	}
+	if err != nil {
+		return cp, false, err
+	}
+	cp.CreatedAt = time.Unix(created, 0)
+	return cp, true, nil
+}
+
+// CountCheckpoints возвращает число точек сессии — для тестов и диагностики.
+func (s *Store) CountCheckpoints(ctx context.Context, tokenID int64, protocol, sessionID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM session_checkpoints WHERE token_id=? AND protocol=? AND session_id=?`,
+		tokenID, protocol, sessionID).Scan(&n)
+	return n, err
+}
+
+// DeleteCheckpoints забывает все точки сессии: сброс диалога и восстановление
+// после ответа «диалог не найден».
+func (s *Store) DeleteCheckpoints(ctx context.Context, tokenID int64, protocol, sessionID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM session_checkpoints WHERE token_id=? AND protocol=? AND session_id=?`,
+		tokenID, protocol, sessionID)
 	return err
 }
 

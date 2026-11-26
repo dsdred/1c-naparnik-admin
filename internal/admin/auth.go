@@ -99,23 +99,37 @@ func (a *Auth) Check(r *http.Request) bool {
 	return time.Now().Unix() < exp
 }
 
-// SetCookie выставляет cookie сессии.
-func SetCookie(w http.ResponseWriter, value string) {
+// isHTTPS сообщает, пришёл ли запрос по защищённому соединению. Учитывается
+// и обратный прокси: он присылает X-Forwarded-Proto.
+func isHTTPS(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+// SetCookie выставляет cookie сессии. Secure включается только на HTTPS:
+// на HTTP браузер такую cookie просто не сохранит и вход сломается.
+func SetCookie(w http.ResponseWriter, r *http.Request, value string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     cookieName,
 		Value:    value,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   isHTTPS(r),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
 }
 
 // ClearCookie удаляет cookie сессии.
-func ClearCookie(w http.ResponseWriter) {
+func ClearCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name: cookieName, Value: "", Path: "/", HttpOnly: true,
-		SameSite: http.SameSiteStrictMode, MaxAge: -1,
+		Secure: isHTTPS(r), SameSite: http.SameSiteStrictMode, MaxAge: -1,
 	})
 }
 

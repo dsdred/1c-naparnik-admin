@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"naparnikadmin/internal/admin"
 	"naparnikadmin/internal/config"
 	"naparnikadmin/internal/gateway"
+	"naparnikadmin/internal/httpx"
 	"naparnikadmin/internal/monitor"
 	"naparnikadmin/internal/naparnik"
 	"naparnikadmin/internal/protocol/anthropic"
@@ -72,6 +74,10 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 // Close освобождает ресурсы.
 func (a *App) Close() error { return a.Store.Close() }
 
+// BuildVersion — версия сборки; её проставляет main. Отдаётся в /healthz,
+// чтобы после замены бинарника можно было проверить, что поднялась нужная сборка.
+var BuildVersion = "dev"
+
 // GatewayHandler собирает маршруты шлюза.
 func (a *App) GatewayHandler() http.Handler {
 	auth := &gateway.Auth{Store: a.Store, Cipher: a.Cipher}
@@ -88,8 +94,7 @@ func (a *App) GatewayHandler() http.Handler {
 	mux.HandleFunc("POST /v1/responses", rs.Responses)
 	mux.HandleFunc("POST /v1beta/", gm.Handle)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		httpx.JSON(w, http.StatusOK, map[string]any{"status": "ok", "version": BuildVersion})
 	})
 	return withLogging(a.Log, mux)
 }
@@ -130,7 +135,12 @@ func (a *App) Start(ctx context.Context) error {
 	return nil
 }
 
-func listenerKey(l config.Listener) string { return l.Kind + "|" + l.Addr }
+// listenerKey — идентичность слушателя. Пути к сертификату входят в ключ:
+// если их поменяли в админке, слушатель пересоздаётся и подхватывает новый
+// сертификат, а не работает со старым до перезапуска процесса.
+func listenerKey(l config.Listener) string {
+	return l.Kind + "|" + l.Addr + "|" + l.CertFile + "|" + l.KeyFile
+}
 
 func (a *App) startListener(l config.Listener) error {
 	if l.Disabled {
@@ -158,16 +168,29 @@ func (a *App) startListener(l config.Listener) error {
 		ReadHeaderTimeout: 15 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
+	// Пару грузим до открытия порта: битый или отсутствующий сертификат должен
+	// вернуться вызывающему сразу, а не уронить слушатель в горутине.
+	useTLS := l.CertFile != "" && l.KeyFile != ""
+	if useTLS {
+		pair, err := tls.LoadX509KeyPair(l.CertFile, l.KeyFile)
+		if err != nil {
+			return fmt.Errorf("слушатель %s: сертификат: %w", l.Addr, err)
+		}
+		srv.TLSConfig = &tls.Config{
+			MinVersion:   tls.VersionTLS12,
+			Certificates: []tls.Certificate{pair},
+		}
+	}
 	ln, err := net.Listen("tcp", l.Addr)
 	if err != nil {
 		return fmt.Errorf("слушатель %s: %w", l.Addr, err)
 	}
 	a.servers[key] = srv
-	a.Log.Info("слушатель запущен", "addr", l.Addr, "kind", l.Kind)
+	a.Log.Info("слушатель запущен", "addr", l.Addr, "kind", l.Kind, "tls", useTLS)
 	go func() {
 		var err error
-		if l.CertFile != "" && l.KeyFile != "" {
-			err = srv.ServeTLS(ln, l.CertFile, l.KeyFile)
+		if useTLS {
+			err = srv.ServeTLS(ln, "", "")
 		} else {
 			err = srv.Serve(ln)
 		}
@@ -180,6 +203,19 @@ func (a *App) startListener(l config.Listener) error {
 
 // ApplyListeners приводит набор слушателей к желаемому без перезапуска процесса.
 func (a *App) ApplyListeners(list []config.Listener) error {
+	// Проверяем сертификаты до остановки работающих слушателей: иначе опечатка
+	// в пути оставила бы сервис без уже поднятых портов.
+	for _, l := range list {
+		if l.Disabled || l.CertFile == "" && l.KeyFile == "" {
+			continue
+		}
+		if l.CertFile == "" || l.KeyFile == "" {
+			return fmt.Errorf("слушатель %s: нужны оба файла — сертификат и ключ", l.Addr)
+		}
+		if _, err := tls.LoadX509KeyPair(l.CertFile, l.KeyFile); err != nil {
+			return fmt.Errorf("слушатель %s: сертификат: %w", l.Addr, err)
+		}
+	}
 	desired := map[string]config.Listener{}
 	for _, l := range list {
 		if l.Disabled {

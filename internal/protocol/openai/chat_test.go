@@ -116,17 +116,10 @@ func TestBuildCompletionReasoning(t *testing.T) {
 	}
 }
 
-func TestStreamTail(t *testing.T) {
-	cases := []struct{ full, sent, want string }{
-		{"привет", "привет", ""},
-		{"привет мир", "привет", " мир"},
-		{"привет", "", "привет"},
-		{"новый текст", "старый", "новый текст"},
-		{"", "что-то", ""},
-	}
-	for _, c := range cases {
-		if got := streamTail(c.full, c.sent); got != c.want {
-			t.Fatalf("streamTail(%q,%q) = %q, want %q", c.full, c.sent, got, c.want)
-		}
+func TestChunkJSONHasRole(t *testing.T) {
+	// Первый чанк потока обязан нести роль: клиенты строят по нему сообщение.
+	out := chunkJSON("naparnik", map[string]any{"role": "assistant", "content": ""}, nil, nil)
+	if !strings.Contains(out, `"role":"assistant"`) {
+		t.Fatalf("в чанке нет роли: %s", out)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -125,7 +126,7 @@ func (s *Server) setPassword(w http.ResponseWriter, r *http.Request) {
 		httpx.JSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	SetCookie(w, value)
+	SetCookie(w, r, value)
 	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -147,12 +148,12 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		httpx.JSON(w, status, map[string]any{"error": err.Error()})
 		return
 	}
-	SetCookie(w, value)
+	SetCookie(w, r, value)
 	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
-	ClearCookie(w)
+	ClearCookie(w, r)
 	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -787,6 +788,9 @@ func validateListeners(list []config.Listener) error {
 			// Выключенная запись порт не занимает, поэтому дубль адреса с ней допустим.
 			continue
 		}
+		if err := validateTLSFiles(l); err != nil {
+			return err
+		}
 		if seen[l.Addr] {
 			return fmt.Errorf("Адрес %s уже занят другим включённым слушателем", l.Addr)
 		}
@@ -801,6 +805,28 @@ func validateListeners(list []config.Listener) error {
 	}
 	if enabledAdmin == 0 {
 		return errors.New("Нельзя выключить последнюю админку — потеряете доступ к настройкам")
+	}
+	return nil
+}
+
+// validateTLSFiles проверяет пару путей к сертификату включённого слушателя.
+// Один путь без другого означал бы молчаливый откат к HTTP, поэтому это ошибка,
+// а не предупреждение.
+func validateTLSFiles(l config.Listener) error {
+	if l.CertFile == "" && l.KeyFile == "" {
+		return nil
+	}
+	if l.CertFile == "" || l.KeyFile == "" {
+		return fmt.Errorf("Слушатель %s: нужны оба файла — сертификат и ключ", l.Addr)
+	}
+	for _, p := range []string{l.CertFile, l.KeyFile} {
+		st, err := os.Stat(p)
+		if err != nil {
+			return fmt.Errorf("Слушатель %s: файл не найден — %s", l.Addr, p)
+		}
+		if st.IsDir() {
+			return fmt.Errorf("Слушатель %s: ожидается файл, а не каталог — %s", l.Addr, p)
+		}
 	}
 	return nil
 }
@@ -950,16 +976,24 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) connect(w http.ResponseWriter, r *http.Request) {
 	base := "http://127.0.0.1:47831"
-	if addrs := s.Cfg.GatewayAddrs(); len(addrs) > 0 {
-		addr := addrs[0]
-		host, port, err := net.SplitHostPort(addr)
+	if l, ok := s.Cfg.GatewayListener(); ok {
+		host, port, err := net.SplitHostPort(l.Addr)
 		if err == nil {
 			if host == "0.0.0.0" || host == "::" {
 				host = "127.0.0.1"
 			}
-			base = "http://" + net.JoinHostPort(host, port)
+			// Схема берётся у слушателя: на HTTPS-порту сниппет с http:// не заработает.
+			scheme := "http"
+			if l.TLS() {
+				scheme = "https"
+			}
+			base = scheme + "://" + net.JoinHostPort(host, port)
 		}
 	}
+	// Имя машины нужно для слушателей на 0.0.0.0: из локальной сети клиент
+	// обращается по нему, а не по 127.0.0.1.
+	host, _ := os.Hostname()
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"base_url":      base,
 		"openai_url":    base + "/v1",
@@ -967,6 +1001,7 @@ func (s *Server) connect(w http.ResponseWriter, r *http.Request) {
 		"gemini_url":    base,
 		"model":         s.Cfg.ModelName(),
 		"token_hint":    "nr_...",
+		"host":          host,
 	})
 }
 

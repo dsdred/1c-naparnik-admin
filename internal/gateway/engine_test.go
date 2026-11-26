@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -198,6 +199,109 @@ func TestLockSessionNotifiesWaiter(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("второй запрос не дождался освобождения")
+	}
+}
+
+func TestFlattenToolTurns(t *testing.T) {
+	turns := []Turn{
+		{Role: RoleUser, Text: "вопрос"},
+		{Role: RoleTool, Results: []naparnik.ToolResult{{ToolCallID: "c1", Status: "ok", Content: "содержимое"}}},
+	}
+	got := flattenToolTurns(turns)
+	if len(got) != 2 {
+		t.Fatalf("ожидалось 2 турна, получено %d", len(got))
+	}
+	if got[1].Role != RoleUser {
+		t.Fatalf("tool-результат должен стать текстом пользователя, получено %q", got[1].Role)
+	}
+	if !strings.Contains(got[1].Text, "c1") || !strings.Contains(got[1].Text, "содержимое") {
+		t.Fatalf("потерялись данные результата: %q", got[1].Text)
+	}
+}
+
+func TestSplitLastUserSeparatesQuestion(t *testing.T) {
+	turns := []Turn{
+		{Role: RoleUser, Text: "первый вопрос"},
+		{Role: RoleAssistant, Text: "ответ"},
+		{Role: RoleUser, Text: "последний вопрос"},
+	}
+	seed, last := splitLastUser(turns)
+	if len(seed) != 2 || len(last) != 1 || last[0].Text != "последний вопрос" {
+		t.Fatalf("неверное разделение: seed=%+v last=%+v", seed, last)
+	}
+	// История засевается отдельной группой, последний вопрос — своей:
+	// иначе groupTurns склеит всё в один текст и модель ответит на «простыню».
+	groups := append(groupTurns(seed), groupTurns(last)...)
+	if len(groups) != 2 {
+		t.Fatalf("ожидалось 2 группы (история + вопрос), получено %d: %+v", len(groups), groups)
+	}
+	if groups[1].Text != "последний вопрос" {
+		t.Fatalf("последняя группа должна быть вопросом, получено %q", groups[1].Text)
+	}
+
+	// Одна реплика — вся история уходит на генерацию, засева нет.
+	if seed, last := splitLastUser([]Turn{{Role: RoleUser, Text: "единственный"}}); len(seed) != 0 || len(last) != 1 {
+		t.Fatalf("единственная реплика должна целиком идти в генерацию: seed=%d last=%d", len(seed), len(last))
+	}
+}
+
+func TestAnchorOf(t *testing.T) {
+	turns := []Turn{
+		{Role: RoleUser, Text: "вопрос"},
+		{Role: RoleAssistant, Text: "первый ответ"},
+		{Role: RoleUser, Text: "ещё"},
+		{Role: RoleAssistant, Text: "  второй ответ  "},
+		{Role: RoleUser, Text: "новый"},
+	}
+	fp, idx := anchorOf(turns)
+	if idx != 3 {
+		t.Fatalf("ожидалась последняя реплика ассистента (3), получено %d", idx)
+	}
+	if fp == "" {
+		t.Fatal("отпечаток пустой")
+	}
+	// Пробелы по краям не влияют: клиент вправе их добавить.
+	if fp2, _ := anchorOf([]Turn{{Role: RoleAssistant, Text: "второй ответ"}}); fp2 != fp {
+		t.Fatalf("пробелы по краям изменили отпечаток: %q != %q", fp2, fp)
+	}
+	if fp3, _ := anchorOf([]Turn{{Role: RoleAssistant, Text: "другой ответ"}}); fp3 == fp {
+		t.Fatal("разный текст должен давать разный отпечаток")
+	}
+	if fp4, idx4 := anchorOf([]Turn{{Role: RoleUser, Text: "только вопрос"}}); fp4 != "" || idx4 != -1 {
+		t.Fatalf("без реплик ассистента точки нет: %q %d", fp4, idx4)
+	}
+}
+
+func TestAnswerDigestNormalizesArgs(t *testing.T) {
+	a := answerDigest("ответ", []naparnik.ToolCall{
+		naparnik.NewToolCall("call-1", "read_file", `{"path": "a.txt", "n": 1}`),
+	})
+	b := answerDigest("ответ", []naparnik.ToolCall{
+		naparnik.NewToolCall("call-1", "read_file", `{"n":1,"path":"a.txt"}`),
+	})
+	if a != b {
+		t.Fatal("порядок ключей в аргументах не должен менять отпечаток")
+	}
+	c := answerDigest("ответ", []naparnik.ToolCall{
+		naparnik.NewToolCall("call-1", "read_file", `{"path":"b.txt","n":1}`),
+	})
+	if a == c {
+		t.Fatal("другие аргументы должны давать другой отпечаток")
+	}
+}
+
+func TestConversationGone(t *testing.T) {
+	if !conversationGone(&naparnik.Fault{Status: 404, Code: "resource_not_found"}) {
+		t.Fatal("404 resource_not_found должен считаться потерей диалога")
+	}
+	if !conversationGone(&naparnik.Fault{Status: 404, Code: "upstream_error"}) {
+		t.Fatal("любой 404 означает, что привязка недействительна")
+	}
+	if conversationGone(&naparnik.Fault{Status: 401, Code: "token_not_found"}) {
+		t.Fatal("401 не должен приводить к пересозданию диалога")
+	}
+	if conversationGone(errors.New("boom")) {
+		t.Fatal("обычная ошибка не должна считаться потерей диалога")
 	}
 }
 

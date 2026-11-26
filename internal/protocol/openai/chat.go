@@ -113,7 +113,6 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	defer sw.Close()
 
 	includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
-	var streamed, streamedReasoning strings.Builder
 	// Первый чанк потока обязан нести роль: клиенты строят по нему сообщение.
 	roleSent := false
 	sendRole := func() {
@@ -124,14 +123,14 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		sw.Event("", chunkJSON(req.Model, map[string]any{"role": "assistant", "content": ""}, nil, nil))
 	}
 	if streamMode == "deltas" {
+		// Engine вызывает эти обработчики только на подтверждённых пакетах:
+		// черновики content_delta клиенту не транслируются.
 		input.OnText = func(text string) {
 			sendRole()
-			streamed.WriteString(text)
 			sw.Event("", chunkJSON(req.Model, map[string]any{"content": text}, nil, nil))
 		}
 		input.OnReasoning = func(text string) {
 			sendRole()
-			streamedReasoning.WriteString(text)
 			sw.Event("", chunkJSON(req.Model, map[string]any{"reasoning_content": text, "reasoning": text}, nil, nil))
 		}
 	}
@@ -160,17 +159,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if text := reply.Text(); text != "" {
 			sw.Event("", chunkJSON(req.Model, map[string]any{"content": text}, nil, nil))
 		}
-	} else {
-		// Дельты могут быть неполными: сервер вправе отфильтровать или поправить текст,
-		// и финальный content приоритетнее накопленных дельт. Досылаем недостающее,
-		// иначе клиент остаётся с обрезанным ответом.
-		if tail := streamTail(reply.Reasoning(), streamedReasoning.String()); tail != "" {
-			sw.Event("", chunkJSON(req.Model, map[string]any{"reasoning_content": tail, "reasoning": tail}, nil, nil))
-		}
-		if tail := streamTail(reply.Text(), streamed.String()); tail != "" {
-			sw.Event("", chunkJSON(req.Model, map[string]any{"content": tail}, nil, nil))
-		}
 	}
+	// В режиме deltas подтверждённые сообщения уже ушли из OnText/OnReasoning:
+	// сверять их с финальным текстом не нужно — источник один и тот же пакет.
 	if calls := reply.ToolCalls(); len(calls) > 0 {
 		out := make([]map[string]any, 0, len(calls))
 		for i, c := range calls {
@@ -361,22 +352,6 @@ func contentText(raw json.RawMessage) (string, bool, error) {
 		}
 	}
 	return b.String(), hasMedia, nil
-}
-
-// streamTail возвращает кусок финального текста, которого не было в дельтах.
-// Напарник вправе отфильтровать или поправить текст, поэтому финальный content
-// приоритетнее накопленных дельт.
-func streamTail(full, sent string) string {
-	switch {
-	case full == "" || full == sent:
-		return ""
-	case sent == "":
-		return full
-	case strings.HasPrefix(full, sent):
-		return full[len(sent):]
-	default:
-		return full
-	}
 }
 
 func buildCompletion(model string, reply *gateway.Reply) map[string]any {
