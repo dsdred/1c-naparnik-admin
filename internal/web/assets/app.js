@@ -836,6 +836,7 @@ async function renderKeyUsage(main) {
       <div class="card"><h3>Средний ответ</h3><div class="metric">${fmtNum(u.usage.avg_latency_ms)} <small>мс</small></div></div>
     </div>
 
+    <div class="grid cols2">
     <div class="card">
       <h3>Расход по времени</h3>
       ${chart(u.series)}
@@ -849,6 +850,7 @@ async function renderKeyUsage(main) {
            ${e.exhaust_at ? '<p class="small muted">При текущем темпе окно закончится около ' + fmtTime(e.exhaust_at) + '</p>' : ''}`
         : '<p class="muted small">Недостаточно данных для оценки — нужно минимум два замера бюджета и хотя бы один запрос.</p>'}
       <p class="small muted" style="margin-bottom:0">${esc(e.note || '')}</p>
+    </div>
     </div>
 
     <div class="card">
