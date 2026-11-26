@@ -53,6 +53,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/tokens/{id}", s.updateToken)
 	mux.HandleFunc("POST /api/tokens/{id}/revoke", s.revokeToken)
 	mux.HandleFunc("POST /api/tokens/{id}/reveal", s.revealToken)
+	mux.HandleFunc("POST /api/tokens/{id}/rotate", s.rotateToken)
 
 	mux.HandleFunc("GET /api/sessions", s.listSessions)
 	mux.HandleFunc("DELETE /api/sessions", s.deleteSession)
@@ -572,6 +573,49 @@ func (s *Server) revealToken(w http.ResponseWriter, r *http.Request) {
 	// Показ значения токена — событие для журнала: токен уходит сотруднику.
 	s.Log.Info("токен показан в админке", "token_id", id, "name", name, "remote", r.RemoteAddr)
 	httpx.JSON(w, http.StatusOK, map[string]any{"token": plain})
+}
+
+// rotateToken выпускает новое значение для существующего токена.
+// Настройки (ключ, провайдер, поток) сохраняются, старое значение перестаёт работать.
+func (s *Server) rotateToken(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "Неверный id"})
+		return
+	}
+	name := "?"
+	if tokens, err := s.Store.ListTokens(r.Context(), 0); err == nil {
+		found := false
+		for i := range tokens {
+			if tokens[i].ID == id {
+				name = tokens[i].Name
+				found = true
+				break
+			}
+		}
+		if !found {
+			httpx.JSON(w, http.StatusNotFound, map[string]any{"error": "Токен не найден"})
+			return
+		}
+	}
+	token, err := secrets.NewToken()
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	enc, err := s.Cipher.Encrypt(token.Plain)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if err := s.Store.RotateToken(r.Context(), id, token.Hash, token.Prefix, string(enc)); err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.Log.Info("токен перевыпущен", "token_id", id, "name", name, "remote", r.RemoteAddr)
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"id": id, "token": token.Plain, "prefix": token.Prefix,
+	})
 }
 
 // ---------- сессии ----------

@@ -844,11 +844,12 @@ function openTokenEdit(id) {
       <label style="display:block;margin-top:14px">Токен
         <div class="row">
           <input id="te_token" readonly value="" placeholder="${t.secret_available ? 'нажмите «Показать», чтобы получить значение' : 'значение не сохранено — выпущен до этой версии'}" style="flex:1;min-width:200px">
-          <button class="btn ghost" ${t.secret_available ? '' : 'disabled'} onclick="revealTokenField(${t.id})">Показать</button>
-          <button class="btn ghost" ${t.secret_available ? '' : 'disabled'} onclick="copy(document.getElementById('te_token').value)">Копировать</button>
+          <button class="btn ghost" onclick="revealTokenField(${t.id})">Показать</button>
+          <button class="btn ghost" onclick="copy(document.getElementById('te_token').value)">Копировать</button>
+          <button class="btn ghost" onclick="rotateTokenField(${t.id})">Сгенерировать новый</button>
         </div>
       </label>
-      <p class="muted small">Префикс <span class="mono">${esc(t.prefix)}…</span> · создан ${fmtTime(t.created_at)}
+      <p class="muted small">Префикс <span class="mono" id="te_prefix">${esc(t.prefix)}…</span> · создан ${fmtTime(t.created_at)}
         · последний запрос ${fmtTime(t.last_used_at)} · ${esc(status)}</p>
       <div class="row" style="justify-content:flex-end;margin-top:18px">
         <button class="btn ghost" onclick="closeTokenEdit()">Отмена</button>
@@ -865,6 +866,18 @@ async function revealTokenField(id) {
     const res = await api('/api/tokens/' + id + '/reveal', { method: 'POST' });
     const input = document.getElementById('te_token');
     if (input) input.value = res.token;
+  } catch (e) { toast(e.message, true); }
+}
+
+async function rotateTokenField(id) {
+  if (!confirm('Сгенерировать новый токен? Старое значение сразу перестанет работать, а токен снова станет активным. Настройки (ключ, провайдер, поток) сохранятся.')) return;
+  try {
+    const res = await api('/api/tokens/' + id + '/rotate', { method: 'POST' });
+    const input = document.getElementById('te_token');
+    if (input) input.value = res.token;
+    const pref = document.getElementById('te_prefix');
+    if (pref) pref.textContent = res.prefix + '…';
+    toast('Новый токен сгенерирован — скопируйте его');
   } catch (e) { toast(e.message, true); }
 }
 

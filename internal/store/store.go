@@ -434,6 +434,21 @@ func (s *Store) RevokeToken(ctx context.Context, id int64) error {
 	return err
 }
 
+// RotateToken заменяет значение токена новым: хеш, префикс и шифртекст.
+// Токен при этом снова становится активным (снимается отзыв).
+func (s *Store) RotateToken(ctx context.Context, id int64, hash, prefix, enc string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE tokens SET hash=?, prefix=?, secret_enc=?, enabled=1, revoked_at=NULL WHERE id=?`,
+		hash, prefix, enc, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ---------- сессии ----------
 
 // GetSession читает привязку сессии.
