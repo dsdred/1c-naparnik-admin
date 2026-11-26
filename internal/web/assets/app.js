@@ -1175,6 +1175,7 @@ async function renderLogs(main) {
             <option value="0">все записи</option>
           </select>
         </label>
+        <button class="btn ghost small" onclick="exportLogs()">Выгрузить CSV</button>
         <button class="btn ghost small" onclick="purgeLogs()">Очистить</button>
       </div>
       <table>
@@ -1196,6 +1197,11 @@ async function renderLogs(main) {
         </tbody>
       </table>
     </div>`;
+}
+
+// exportLogs скачивает журнал файлом CSV: сервер отдаёт его вложением.
+function exportLogs() {
+  window.location.href = '/api/logs/export';
 }
 
 // purgeLogs удаляет записи журнала старше выбранного срока (0 — все).

@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,6 +61,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/sessions", s.deleteSession)
 
 	mux.HandleFunc("GET /api/logs", s.logs)
+	mux.HandleFunc("GET /api/logs/export", s.exportLogs)
 	mux.HandleFunc("POST /api/logs/purge", s.purgeLogs)
 
 	mux.HandleFunc("GET /api/listeners", s.getListeners)
@@ -703,6 +705,64 @@ func (s *Server) purgeLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Log.Info("журнал запросов очищен", "deleted", deleted, "days", req.Days)
 	httpx.JSON(w, http.StatusOK, map[string]any{"deleted": deleted})
+}
+
+// exportLogs отдаёт журнал файлом CSV (разделитель «;», UTF-8 с BOM — открывается в Excel).
+func (s *Server) exportLogs(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f := store.LogFilter{Protocol: q.Get("protocol"), All: true}
+	f.KeyID, _ = strconv.ParseInt(q.Get("key_id"), 10, 64)
+	f.TokenID, _ = strconv.ParseInt(q.Get("token_id"), 10, 64)
+	f.Status, _ = strconv.Atoi(q.Get("status"))
+	if v := q.Get("hours"); v != "" {
+		if hours := atoiDefault(v, 0); hours > 0 {
+			f.Since = time.Now().Add(-time.Duration(hours) * time.Hour)
+		}
+	}
+	entries, _, err := s.Store.QueryLog(r.Context(), f)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	tokens, err := s.Store.ListTokens(r.Context(), 0)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	tokenName := make(map[int64]string, len(tokens))
+	for _, t := range tokens {
+		tokenName[t.ID] = t.Name
+	}
+
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition",
+		fmt.Sprintf(`attachment; filename="naparnik-journal-%s.csv"`, time.Now().Format("20060102-1504")))
+	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF}) // BOM: Excel иначе не распознаёт UTF-8
+
+	cw := csv.NewWriter(w)
+	cw.Comma = ';'
+	_ = cw.Write([]string{"Время", "Токен", "Протокол", "Модель", "Статус", "Ошибка",
+		"Токены запроса", "Токены ответа", "Из кэша", "Задержка, мс", "Поток", "Запрос"})
+	for _, e := range entries {
+		name := tokenName[e.TokenID]
+		if name == "" {
+			name = "#" + strconv.FormatInt(e.TokenID, 10)
+		}
+		stream := "нет"
+		if e.Stream {
+			stream = "да"
+		}
+		_ = cw.Write([]string{
+			e.TS.Format("2006-01-02 15:04:05"), name, e.Protocol, e.Model,
+			strconv.Itoa(e.Status), e.ErrorType,
+			strconv.Itoa(e.PromptTokens), strconv.Itoa(e.CompTokens), strconv.Itoa(e.CachedTokens),
+			strconv.Itoa(e.LatencyMS), stream, e.Prompt,
+		})
+	}
+	cw.Flush()
+	if err := cw.Error(); err != nil {
+		s.Log.Warn("не удалось выгрузить журнал", "err", err)
+	}
 }
 
 // ---------- слушатели ----------

@@ -655,6 +655,8 @@ type LogFilter struct {
 	Since    time.Time
 	Limit    int
 	Offset   int
+	// All отключает постраничный лимит — нужно для выгрузки журнала в файл.
+	All bool
 }
 
 // QueryLog возвращает записи журнала и общее количество.
@@ -690,8 +692,16 @@ func (s *Store) QueryLog(ctx context.Context, f LogFilter) ([]LogEntry, int, err
 	}
 	q := `SELECT id, ts, token_id, key_id, protocol, model, status, error_type,
 	         prompt_tokens, completion_tokens, cached_tokens, latency_ms, stream, prompt
-	      FROM request_log ` + where + ` ORDER BY ts DESC LIMIT ? OFFSET ?`
-	rows, err := s.db.QueryContext(ctx, q, append(args, f.Limit, f.Offset)...)
+	      FROM request_log ` + where + ` ORDER BY ts DESC`
+	params := args
+	if !f.All {
+		if f.Limit <= 0 {
+			f.Limit = 50
+		}
+		q += ` LIMIT ? OFFSET ?`
+		params = append(params, f.Limit, f.Offset)
+	}
+	rows, err := s.db.QueryContext(ctx, q, params...)
 	if err != nil {
 		return nil, 0, err
 	}
