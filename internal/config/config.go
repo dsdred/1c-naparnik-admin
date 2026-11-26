@@ -17,6 +17,10 @@ const (
 	KindAdmin   = "admin"
 )
 
+// DefaultModelID — публичный id модели, который шлюз показывает клиентам,
+// если в конфиге не задан свой (model_id).
+const DefaultModelID = "naparnik"
+
 // Listener — один сетевой вход сервиса.
 type Listener struct {
 	Addr     string `yaml:"addr" json:"addr"`
@@ -50,6 +54,7 @@ func (d Duration) D() time.Duration { return time.Duration(d) }
 type Config struct {
 	DataDir            string     `yaml:"data_dir" json:"data_dir"`
 	UpstreamBase       string     `yaml:"upstream_base" json:"upstream_base"`
+	ModelID            string     `yaml:"model_id" json:"model_id"`
 	Listeners          []Listener `yaml:"listeners" json:"listeners"`
 	StreamMode         string     `yaml:"stream_mode" json:"stream_mode"`
 	AutoCompactAt      float64    `yaml:"auto_compact_at" json:"auto_compact_at"`
@@ -68,6 +73,7 @@ func Default() *Config {
 	return &Config{
 		DataDir:            "./data",
 		UpstreamBase:       "https://code.1c.ai/public/v1",
+		ModelID:            DefaultModelID,
 		StreamMode:         "final",
 		AutoCompactAt:      0.85,
 		BudgetPollInterval: Duration(5 * time.Minute),
@@ -109,6 +115,9 @@ func (c *Config) applyEnv() {
 	if v := os.Getenv("NAPARNIK_ADMIN_UPSTREAM"); v != "" {
 		c.UpstreamBase = v
 	}
+	if v := os.Getenv("NAPARNIK_ADMIN_MODEL_ID"); v != "" {
+		c.ModelID = v
+	}
 	if v := os.Getenv("NAPARNIK_ADMIN_STREAM_MODE"); v != "" {
 		c.StreamMode = v
 	}
@@ -122,6 +131,10 @@ func (c *Config) normalize() {
 		c.UpstreamBase = "https://code.1c.ai/public/v1"
 	}
 	c.UpstreamBase = strings.TrimRight(c.UpstreamBase, "/")
+	if strings.TrimSpace(c.ModelID) == "" {
+		c.ModelID = DefaultModelID
+	}
+	c.ModelID = strings.TrimSpace(c.ModelID)
 	if c.StreamMode != "deltas" {
 		c.StreamMode = "final"
 	}
@@ -171,6 +184,17 @@ func (c *Config) Save() error {
 
 // DBPath возвращает путь к файлу базы.
 func (c *Config) DBPath() string { return filepath.Join(c.DataDir, "admin.db") }
+
+// ModelName возвращает публичный id модели: настроенный или «naparnik» по умолчанию.
+// Модель не уходит в API Напарника — это только имя, которое видят IDE.
+func (c *Config) ModelName() string {
+	if c != nil {
+		if v := strings.TrimSpace(c.ModelID); v != "" {
+			return v
+		}
+	}
+	return DefaultModelID
+}
 
 // GatewayAddrs возвращает адреса gateway-слушателей — их показываем в сниппетах подключения.
 func (c *Config) GatewayAddrs() []string {

@@ -2,6 +2,10 @@
 data_dir: ./data
 upstream_base: https://code.1c.ai/public/v1
 
+# Публичный id модели: его видят IDE в сниппетах подключения и в GET /v1/models.
+# В API Напарника не уходит — можно задать любое удобное имя.
+model_id: naparnik
+
 listeners:
   # Шлюз для IDE. Для доступа из локальной сети замените на 0.0.0.0:47831.
   - addr: 127.0.0.1:47831

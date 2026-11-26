@@ -275,7 +275,7 @@ func (h *Handler) buildResponse(model string, reply *gateway.Reply) map[string]a
 			"finishReason": finishReason(reply),
 			"index":        0,
 		}},
-		"modelVersion": modelOr(model),
+		"modelVersion": model,
 	}
 	if reply.Usage != nil {
 		out["usageMetadata"] = usageMetadata(reply.Usage)
@@ -421,13 +421,6 @@ func (h *Handler) logRequest(r *http.Request, p *gateway.Principal, model string
 func mustJSON(v any) string {
 	data, _ := json.Marshal(v)
 	return string(data)
-}
-
-func modelOr(model string) string {
-	if strings.TrimSpace(model) == "" {
-		return "naparnik"
-	}
-	return model
 }
 
 func sessionID(r *http.Request) string {

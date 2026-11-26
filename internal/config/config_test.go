@@ -26,6 +26,38 @@ func TestDefaults(t *testing.T) {
 	}
 }
 
+func TestModelID(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ModelName() != DefaultModelID {
+		t.Fatalf("id модели по умолчанию: %q", cfg.ModelName())
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("model_id: naparnik-pro\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ModelName() != "naparnik-pro" {
+		t.Fatalf("id модели из файла: %q", cfg.ModelName())
+	}
+
+	t.Setenv("NAPARNIK_ADMIN_MODEL_ID", "from-env")
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ModelName() != "from-env" {
+		t.Fatalf("id модели из окружения: %q", cfg.ModelName())
+	}
+}
+
 func TestLoadFileAndNormalize(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

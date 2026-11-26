@@ -44,7 +44,7 @@ cp config.example.yaml config.yaml
 ```
 Base URL: http://127.0.0.1:47831/v1
 API Key:  nr_...            (токен из админки)
-Model:    naparnik
+Model:    naparnik          (id модели из настроек админки)
 ```
 
 **Claude Code**:
@@ -95,6 +95,7 @@ bin\naparnik-admin.exe service remove
 
 ```yaml
 data_dir: ./data
+model_id: naparnik          # id модели для IDE, меняется в настройках админки
 listeners:
   - addr: 127.0.0.1:47831   # шлюз
     kind: gateway
@@ -112,7 +113,9 @@ crit_percent: 95
 alert_webhook: ""
 ```
 
-Переменные окружения: `NAPARNIK_ADMIN_DATA_DIR`, `NAPARNIK_ADMIN_MASTER_KEY` (base64, 32 байта), `NAPARNIK_ADMIN_UPSTREAM`.
+Переменные окружения: `NAPARNIK_ADMIN_DATA_DIR`, `NAPARNIK_ADMIN_MASTER_KEY` (base64, 32 байта), `NAPARNIK_ADMIN_UPSTREAM`, `NAPARNIK_ADMIN_MODEL_ID`.
+
+`model_id` — публичное имя модели: его показывают сниппеты подключения и `GET /v1/models`, а запросы с этим именем принимаются как обычно. В API Напарника имя не передаётся, так что менять его можно свободно (латиница, цифры, `- _ . : /`). Правится в разделе «Настройки» без перезапуска.
 
 Мастер-ключ при первом запуске генерируется в `data/master.key` (права 0600). Без него нельзя расшифровать ключи Напарника — сохраните его вместе с базой.
 

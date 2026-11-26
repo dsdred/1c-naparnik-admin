@@ -77,6 +77,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, nil, err)
 		return
 	}
+	req.Model = h.modelName(req.Model)
 
 	system, turns, tools, err := normalizeChat(&req)
 	if err != nil {
@@ -171,7 +172,7 @@ func (h *Handler) Models(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	model := map[string]any{
-		"id":       "naparnik",
+		"id":       h.Cfg.ModelName(),
 		"object":   "model",
 		"created":  0,
 		"owned_by": "naparnik-admin",
@@ -354,7 +355,7 @@ func buildCompletion(model string, reply *gateway.Reply) map[string]any {
 		"id":      "chatcmpl-" + randomID(),
 		"object":  "chat.completion",
 		"created": time.Now().Unix(),
-		"model":   modelOr(model),
+		"model":   model,
 		"choices": []any{map[string]any{"index": 0, "message": msg, "finish_reason": finish}},
 	}
 	if reply.Usage != nil {
@@ -380,7 +381,7 @@ func chunkJSON(model string, delta map[string]any, finish *string, usage map[str
 		"id":      "chatcmpl-" + randomID(),
 		"object":  "chat.completion.chunk",
 		"created": time.Now().Unix(),
-		"model":   modelOr(model),
+		"model":   model,
 	}
 	if delta == nil {
 		payload["choices"] = []any{}
@@ -418,11 +419,12 @@ func errorJSON(ge *gateway.Error) string {
 	return string(data)
 }
 
-func modelOr(model string) string {
-	if strings.TrimSpace(model) == "" {
-		return "naparnik"
+// modelName подставляет настроенный id модели, если клиент его не указал.
+func (h *Handler) modelName(model string) string {
+	if strings.TrimSpace(model) != "" {
+		return model
 	}
-	return model
+	return h.Cfg.ModelName()
 }
 
 // randomID возвращает короткий случайный идентификатор для полей id ответов.

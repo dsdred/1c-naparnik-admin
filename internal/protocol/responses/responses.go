@@ -65,6 +65,7 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, nil, err)
 		return
 	}
+	req.Model = h.modelName(req.Model)
 
 	turns, tools, err := normalize(&req)
 	if err != nil {
@@ -97,7 +98,7 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 
 	base := map[string]any{
 		"id": respID, "object": "response", "created_at": time.Now().Unix(),
-		"model": modelOr(req.Model), "status": "in_progress", "output": []any{},
+		"model": req.Model, "status": "in_progress", "output": []any{},
 	}
 	sw.Event("response.created", mustJSON(map[string]any{"type": "response.created", "response": base}))
 	sw.Event("response.in_progress", mustJSON(map[string]any{"type": "response.in_progress", "response": base}))
@@ -333,7 +334,7 @@ func buildResponse(id, model string, reply *gateway.Reply) map[string]any {
 	}
 	out := map[string]any{
 		"id": id, "object": "response", "created_at": time.Now().Unix(),
-		"model": modelOr(model), "status": "completed", "output": output,
+		"model": model, "status": "completed", "output": output,
 	}
 	if reply.Usage != nil {
 		u := map[string]any{
@@ -362,11 +363,12 @@ func randomID() string {
 	return hex.EncodeToString(buf)
 }
 
-func modelOr(model string) string {
-	if strings.TrimSpace(model) == "" {
-		return "naparnik"
+// modelName подставляет настроенный id модели, если клиент его не указал.
+func (h *Handler) modelName(model string) string {
+	if strings.TrimSpace(model) != "" {
+		return model
 	}
-	return model
+	return h.Cfg.ModelName()
 }
 
 func sessionID(r *http.Request) string {

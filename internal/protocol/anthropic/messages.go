@@ -71,6 +71,7 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, nil, err)
 		return
 	}
+	req.Model = h.modelName(req.Model)
 
 	system, turns, tools, err := normalize(&req)
 	if err != nil {
@@ -109,7 +110,7 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 		"type": "message_start",
 		"message": map[string]any{
 			"id": msgID, "type": "message", "role": "assistant",
-			"model": modelOr(req.Model), "content": []any{},
+			"model": req.Model, "content": []any{},
 			"stop_reason": nil, "stop_sequence": nil,
 			"usage": map[string]any{"input_tokens": 0, "output_tokens": 0},
 		},
@@ -368,7 +369,7 @@ func buildMessage(model string, reply *gateway.Reply) map[string]any {
 	}
 	out := map[string]any{
 		"id": "msg_" + randomID(), "type": "message", "role": "assistant",
-		"model": modelOr(model), "content": content,
+		"model": model, "content": content,
 		"stop_reason": stopReason, "stop_sequence": nil,
 		"usage": anthropicUsage(reply.Usage),
 	}
@@ -440,11 +441,12 @@ func randomID() string {
 	return hex.EncodeToString(buf)
 }
 
-func modelOr(model string) string {
-	if strings.TrimSpace(model) == "" {
-		return "naparnik"
+// modelName подставляет настроенный id модели, если клиент его не указал.
+func (h *Handler) modelName(model string) string {
+	if strings.TrimSpace(model) != "" {
+		return model
 	}
-	return model
+	return h.Cfg.ModelName()
 }
 
 func sessionID(r *http.Request) string {

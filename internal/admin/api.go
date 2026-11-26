@@ -715,6 +715,7 @@ func (s *Server) putListeners(w http.ResponseWriter, r *http.Request) {
 // ---------- настройки ----------
 
 type settingsView struct {
+	ModelID            string  `json:"model_id"`
 	StreamMode         string  `json:"stream_mode"`
 	AutoCompactAt      float64 `json:"auto_compact_at"`
 	SessionTTL         string  `json:"session_ttl"`
@@ -726,8 +727,29 @@ type settingsView struct {
 	UpstreamBase       string  `json:"upstream_base"`
 }
 
+// normalizeModelID проверяет публичный id модели: без пробелов и служебных символов,
+// чтобы его можно было безопасно подставить в сниппеты подключения и JSON.
+func normalizeModelID(raw string) (string, error) {
+	id := strings.TrimSpace(raw)
+	if id == "" {
+		return "", errors.New("ID модели не может быть пустым")
+	}
+	if len([]rune(id)) > 64 {
+		return "", errors.New("ID модели длиннее 64 символов")
+	}
+	for _, r := range id {
+		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
+			r == '-' || r == '_' || r == '.' || r == ':' || r == '/'
+		if !ok {
+			return "", errors.New("ID модели может содержать только латиницу, цифры и символы - _ . : /")
+		}
+	}
+	return id, nil
+}
+
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, settingsView{
+		ModelID:            s.Cfg.ModelName(),
 		StreamMode:         s.Cfg.StreamMode,
 		AutoCompactAt:      s.Cfg.AutoCompactAt,
 		SessionTTL:         s.Cfg.SessionTTL.D().String(),
@@ -745,6 +767,14 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "Не удалось разобрать запрос"})
 		return
+	}
+	if req.ModelID != "" {
+		id, err := normalizeModelID(req.ModelID)
+		if err != nil {
+			httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		s.Cfg.ModelID = id
 	}
 	if req.StreamMode == "deltas" || req.StreamMode == "final" {
 		s.Cfg.StreamMode = req.StreamMode
@@ -793,7 +823,7 @@ func (s *Server) connect(w http.ResponseWriter, r *http.Request) {
 		"openai_url":    base + "/v1",
 		"anthropic_url": base,
 		"gemini_url":    base,
-		"model":         "naparnik",
+		"model":         s.Cfg.ModelName(),
 		"token_hint":    "nr_...",
 	})
 }

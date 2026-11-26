@@ -1224,6 +1224,9 @@ async function renderSettings(main) {
   main.innerHTML = `
     <h1>Настройки</h1>
     <div class="card grid cols2">
+      <label>ID модели для подключения
+        <input id="s_model" value="${esc(s.model_id || 'naparnik')}" placeholder="naparnik">
+      </label>
       <label>Режим потока по умолчанию
         ${ddHTML('s_stream', [
           { value: 'final', label: 'final — отдавать финальный текст' },
@@ -1253,11 +1256,12 @@ async function renderSettings(main) {
       </label>
     </div>
     <div class="row"><button class="btn" onclick="saveSettings()">Сохранить</button></div>
-    <p class="muted small">Часть настроек (таймаут запроса, период опроса) применится после перезапуска сервиса.</p>`;
+    <p class="muted small">ID модели — это имя, которое видят IDE в сниппетах и в <code>/v1/models</code>; в API Напарника оно не уходит. Часть настроек (таймаут запроса, период опроса) применится после перезапуска сервиса.</p>`;
 }
 
 async function saveSettings() {
   const body = {
+    model_id: document.getElementById('s_model').value.trim(),
     stream_mode: ddValue('s_stream'),
     auto_compact_at: Number(document.getElementById('s_compact').value),
     session_ttl: document.getElementById('s_ttl').value.trim(),
