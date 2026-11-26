@@ -52,6 +52,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tokens", s.createToken)
 	mux.HandleFunc("PATCH /api/tokens/{id}", s.updateToken)
 	mux.HandleFunc("POST /api/tokens/{id}/revoke", s.revokeToken)
+	mux.HandleFunc("POST /api/tokens/{id}/reveal", s.revealToken)
 
 	mux.HandleFunc("GET /api/sessions", s.listSessions)
 	mux.HandleFunc("DELETE /api/sessions", s.deleteSession)
@@ -441,10 +442,15 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	enc, err := s.Cipher.Encrypt(token.Plain)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
 	id, err := s.Store.CreateToken(r.Context(), store.Token{
 		KeyID: req.KeyID, Name: req.Name, Provider: req.Provider, Prefix: token.Prefix,
 		StreamMode: req.StreamMode, ServerTools: req.ServerTools, Enabled: true,
-	}, token.Hash)
+	}, token.Hash, string(enc))
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -478,6 +484,7 @@ func (s *Server) updateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
+		KeyID       *int64  `json:"key_id"`
 		Name        *string `json:"name"`
 		Provider    *string `json:"provider"`
 		StreamMode  *string `json:"stream_mode"`
@@ -487,6 +494,13 @@ func (s *Server) updateToken(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "Не удалось разобрать запрос"})
 		return
+	}
+	if req.KeyID != nil && *req.KeyID != cur.KeyID {
+		if _, err := s.Store.GetKey(r.Context(), *req.KeyID); err != nil {
+			httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "Ключ Напарника не найден"})
+			return
+		}
+		cur.KeyID = *req.KeyID
 	}
 	if req.Name != nil {
 		cur.Name = *req.Name
@@ -521,6 +535,43 @@ func (s *Server) revokeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// revealToken возвращает полное значение токена, чтобы его можно было передать сотруднику.
+func (s *Server) revealToken(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "Неверный id"})
+		return
+	}
+	enc, err := s.Store.TokenSecret(r.Context(), id)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if enc == "" {
+		httpx.JSON(w, http.StatusConflict, map[string]any{
+			"error": "Значение этого токена не сохранено: он выпущен до появления этой возможности. Выпустите новый токен.",
+		})
+		return
+	}
+	plain, err := s.Cipher.Decrypt([]byte(enc))
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	name := "?"
+	if tokens, err := s.Store.ListTokens(r.Context(), 0); err == nil {
+		for i := range tokens {
+			if tokens[i].ID == id {
+				name = tokens[i].Name
+				break
+			}
+		}
+	}
+	// Показ значения токена — событие для журнала: токен уходит сотруднику.
+	s.Log.Info("токен показан в админке", "token_id", id, "name", name, "remote", r.RemoteAddr)
+	httpx.JSON(w, http.StatusOK, map[string]any{"token": plain})
 }
 
 // ---------- сессии ----------

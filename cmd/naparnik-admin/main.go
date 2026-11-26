@@ -180,6 +180,14 @@ func runToken(configPath string, log *slog.Logger, args []string) error {
 		return err
 	}
 	defer st.Close()
+	masterKey, err := secrets.LoadOrCreateMasterKey(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	cipher, err := secrets.NewCipher(masterKey)
+	if err != nil {
+		return err
+	}
 	ctx := context.Background()
 
 	switch args[0] {
@@ -196,10 +204,14 @@ func runToken(configPath string, log *slog.Logger, args []string) error {
 		if err != nil {
 			return err
 		}
+		encTok, err := cipher.Encrypt(token.Plain)
+		if err != nil {
+			return err
+		}
 		id, err := st.CreateToken(ctx, store.Token{
 			KeyID: *keyID, Name: orDefault(*name, "Токен из CLI"), Provider: *provider,
 			Prefix: token.Prefix, ServerTools: "auto", Enabled: true,
-		}, token.Hash)
+		}, token.Hash, string(encTok))
 		if err != nil {
 			return err
 		}

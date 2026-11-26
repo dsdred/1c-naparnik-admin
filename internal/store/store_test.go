@@ -62,7 +62,7 @@ func TestTokensAndSessions(t *testing.T) {
 	id, err := st.CreateToken(ctx, Token{
 		KeyID: keyID, Name: "Cline", Provider: "openai", Prefix: "nr_1234567",
 		ServerTools: "auto", Enabled: true,
-	}, "hash-1")
+	}, "hash-1", "enc-1")
 	if err != nil {
 		t.Fatalf("создание токена: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestUsageAggregates(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
 	keyID, _ := st.CreateKey(ctx, "К", "…1111", []byte{1})
-	tokID, _ := st.CreateToken(ctx, Token{KeyID: keyID, Name: "T", Prefix: "nr_", ServerTools: "auto", Enabled: true}, "h")
+	tokID, _ := st.CreateToken(ctx, Token{KeyID: keyID, Name: "T", Prefix: "nr_", ServerTools: "auto", Enabled: true}, "h", "")
 
 	now := time.Now()
 	for i, pt := range []int{100, 200} {

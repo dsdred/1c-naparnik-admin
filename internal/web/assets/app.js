@@ -483,6 +483,7 @@ const ACTION_ICONS = {
   powerOn: '<path d="M12 4v8"/><path d="M7.5 7a7 7 0 1 0 9 0"/><path d="M9 13l2 2 4-4"/>',
   trash: '<path d="M4 7h16"/><path d="M9 7V5h6v2"/><path d="M6 7l1 13h10l1-13"/>',
   revoke: '<circle cx="12" cy="12" r="8"/><path d="M6.4 17.6L17.6 6.4"/>',
+  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5h10"/>',
 };
 
 function iconBtn(name, title, onclick, cls) {
@@ -747,7 +748,8 @@ async function renderTokens(main) {
             <td class="small muted">${esc(t.stream_mode || 'по умолчанию')}</td>
             <td class="small muted">${fmtTime(t.last_used_at)}</td>
             <td class="actions">
-              ${iconBtn('edit', 'Изменить название, провайдера или поток', `openTokenEdit(${t.id})`)}
+              ${t.secret_available ? iconBtn('copy', 'Скопировать токен — можно передать сотруднику', `copyToken(${t.id})`) : ''}
+              ${iconBtn('edit', 'Изменить токен: название, ключ, провайдер, поток', `openTokenEdit(${t.id})`)}
               ${iconBtn(t.enabled ? 'powerOff' : 'powerOn', t.enabled ? 'Выключить' : 'Включить', `toggleToken(${t.id}, ${!t.enabled})`)}
               ${iconBtn('revoke', 'Отозвать — IDE перестанет подключаться', `revokeToken(${t.id})`, 'danger')}
             </td>
@@ -801,28 +803,53 @@ async function revokeToken(id) {
   } catch (e) { toast(e.message, true); }
 }
 
+async function copyToken(id) {
+  try {
+    const res = await api('/api/tokens/' + id + '/reveal', { method: 'POST' });
+    await copy(res.token);
+  } catch (e) { toast(e.message, true); }
+}
+
 // ---------- редактирование токена ----------
 
 function openTokenEdit(id) {
   const t = (state.tokens || []).find((x) => x.id === id);
   if (!t) return;
+  const keys = state.keys || [];
+  const status = t.revoked_at
+    ? 'отозван ' + fmtTime(t.revoked_at)
+    : (t.enabled ? 'включён' : 'выключен');
   const wrap = document.createElement('div');
   wrap.className = 'modal-backdrop';
   wrap.id = 'token-modal';
   wrap.innerHTML = `
     <div class="modal">
       <h2 style="margin-top:0">Изменить токен</h2>
-      <p class="muted small">Значение токена (<span class="mono">${esc(t.prefix)}…</span>) изменить нельзя:
-        в базе хранится только его хеш. Нужен новый — отзовите этот и выпустите другой.</p>
       <div class="grid">
         <label>Название<input id="te_name" value="${esc(t.name)}"></label>
+        <label>Ключ Напарника${ddHTML('te_key',
+          keys.map((k) => ({ value: String(k.id), label: k.name + ' · ' + k.key_hint })),
+          String(t.key_id), '')}</label>
         <label>Провайдер${ddHTML('te_provider', PROVIDERS, t.provider || '', '')}</label>
         <label>Поток${ddHTML('te_stream', [
           { value: '', label: 'как в настройках' },
           { value: 'final', label: 'final — цельным куском' },
           { value: 'deltas', label: 'deltas — по мере генерации' },
         ], t.stream_mode || '', '')}</label>
+        <label>Состояние${ddHTML('te_enabled', [
+          { value: '1', label: 'включён' },
+          { value: '0', label: 'выключен' },
+        ], t.enabled ? '1' : '0', '')}</label>
       </div>
+      <label style="display:block;margin-top:14px">Токен
+        <div class="row">
+          <input id="te_token" readonly value="" placeholder="${t.secret_available ? 'нажмите «Показать», чтобы получить значение' : 'значение не сохранено — выпущен до этой версии'}" style="flex:1;min-width:200px">
+          <button class="btn ghost" ${t.secret_available ? '' : 'disabled'} onclick="revealTokenField(${t.id})">Показать</button>
+          <button class="btn ghost" ${t.secret_available ? '' : 'disabled'} onclick="copy(document.getElementById('te_token').value)">Копировать</button>
+        </div>
+      </label>
+      <p class="muted small">Префикс <span class="mono">${esc(t.prefix)}…</span> · создан ${fmtTime(t.created_at)}
+        · последний запрос ${fmtTime(t.last_used_at)} · ${esc(status)}</p>
       <div class="row" style="justify-content:flex-end;margin-top:18px">
         <button class="btn ghost" onclick="closeTokenEdit()">Отмена</button>
         <button class="btn" onclick="saveTokenEdit(${t.id})">Сохранить</button>
@@ -833,6 +860,14 @@ function openTokenEdit(id) {
   document.getElementById('te_name').focus();
 }
 
+async function revealTokenField(id) {
+  try {
+    const res = await api('/api/tokens/' + id + '/reveal', { method: 'POST' });
+    const input = document.getElementById('te_token');
+    if (input) input.value = res.token;
+  } catch (e) { toast(e.message, true); }
+}
+
 function closeTokenEdit() {
   const el = document.getElementById('token-modal');
   if (el) el.remove();
@@ -841,10 +876,12 @@ function closeTokenEdit() {
 async function saveTokenEdit(id) {
   const name = document.getElementById('te_name').value.trim();
   if (!name) return toast('Название не может быть пустым', true);
+  const key_id = Number(ddValue('te_key'));
   const provider = ddValue('te_provider');
   const stream_mode = ddValue('te_stream');
+  const enabled = ddValue('te_enabled') === '1';
   try {
-    await api('/api/tokens/' + id, { method: 'PATCH', body: { name, provider, stream_mode } });
+    await api('/api/tokens/' + id, { method: 'PATCH', body: { key_id, name, provider, stream_mode, enabled } });
     closeTokenEdit();
     toast('Сохранено');
     go('tokens');

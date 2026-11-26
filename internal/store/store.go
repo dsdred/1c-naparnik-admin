@@ -35,17 +35,29 @@ type Key struct {
 
 // Token — токен доступа к шлюзу, привязанный к ключу Напарника.
 type Token struct {
-	ID          int64      `json:"id"`
-	KeyID       int64      `json:"key_id"`
-	Name        string     `json:"name"`
-	Provider    string     `json:"provider"` // пусто — любой протокол
-	Prefix      string     `json:"prefix"`
-	StreamMode  string     `json:"stream_mode"`
-	ServerTools string     `json:"server_tools"` // auto | deny
-	Enabled     bool       `json:"enabled"`
-	CreatedAt   time.Time  `json:"created_at"`
-	LastUsedAt  *time.Time `json:"last_used_at"`
-	RevokedAt   *time.Time `json:"revoked_at"`
+	ID          int64  `json:"id"`
+	KeyID       int64  `json:"key_id"`
+	Name        string `json:"name"`
+	Provider    string `json:"provider"` // пусто — любой протокол
+	Prefix      string `json:"prefix"`
+	StreamMode  string `json:"stream_mode"`
+	ServerTools string `json:"server_tools"` // auto | deny
+	// SecretAvailable — есть ли шифртекст значения (у токенов, выпущенных раньше, его нет).
+	SecretAvailable bool       `json:"secret_available"`
+	Enabled         bool       `json:"enabled"`
+	CreatedAt       time.Time  `json:"created_at"`
+	LastUsedAt      *time.Time `json:"last_used_at"`
+	RevokedAt       *time.Time `json:"revoked_at"`
+}
+
+// TokenSecret возвращает шифртекст значения токена (пустая строка — значение не сохранено).
+func (s *Store) TokenSecret(ctx context.Context, id int64) (string, error) {
+	var enc string
+	err := s.db.QueryRowContext(ctx, `SELECT secret_enc FROM tokens WHERE id=?`, id).Scan(&enc)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return enc, err
 }
 
 // Session — привязка клиентской сессии к диалогу Напарника.
@@ -193,6 +205,9 @@ CREATE TABLE IF NOT EXISTS settings (
 	_, _ = s.db.Exec(`ALTER TABLE tokens RENAME COLUMN ide TO provider`)
 	// Старые значения были названиями IDE, а не протоколами: сбрасываем их в «любой».
 	_, _ = s.db.Exec(`UPDATE tokens SET provider='' WHERE provider NOT IN ('', 'openai', 'responses', 'anthropic', 'gemini')`)
+	// Миграция: шифртекст токена, чтобы значение можно было выдать сотруднику повторно.
+	// У токенов, выпущенных раньше, колонка пустая — значение восстановить нельзя.
+	_, _ = s.db.Exec(`ALTER TABLE tokens ADD COLUMN secret_enc TEXT NOT NULL DEFAULT ''`)
 	return nil
 }
 
@@ -321,11 +336,11 @@ func (s *Store) DeleteKey(ctx context.Context, id int64) error {
 // ---------- токены ----------
 
 // CreateToken сохраняет токен (хеш) и возвращает id.
-func (s *Store) CreateToken(ctx context.Context, t Token, hash string) (int64, error) {
+func (s *Store) CreateToken(ctx context.Context, t Token, hash, enc string) (int64, error) {
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO tokens(key_id, name, provider, prefix, hash, stream_mode, server_tools, enabled, created_at)
-		 VALUES(?,?,?,?,?,?,?,?,?)`,
-		t.KeyID, t.Name, t.Provider, t.Prefix, hash, t.StreamMode, t.ServerTools, boolInt(t.Enabled), time.Now().Unix())
+		`INSERT INTO tokens(key_id, name, provider, prefix, hash, secret_enc, stream_mode, server_tools, enabled, created_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		t.KeyID, t.Name, t.Provider, t.Prefix, hash, enc, t.StreamMode, t.ServerTools, boolInt(t.Enabled), time.Now().Unix())
 	if err != nil {
 		return 0, err
 	}
@@ -334,7 +349,8 @@ func (s *Store) CreateToken(ctx context.Context, t Token, hash string) (int64, e
 
 // ListTokens возвращает токены, при необходимости — только для одного ключа.
 func (s *Store) ListTokens(ctx context.Context, keyID int64) ([]Token, error) {
-	q := `SELECT id, key_id, name, provider, prefix, stream_mode, server_tools, enabled, created_at, last_used_at, revoked_at FROM tokens`
+	q := `SELECT id, key_id, name, provider, prefix, stream_mode, server_tools, enabled, created_at, last_used_at, revoked_at,
+		secret_enc<>'' FROM tokens`
 	args := []any{}
 	if keyID > 0 {
 		q += ` WHERE key_id=?`
@@ -349,13 +365,14 @@ func (s *Store) ListTokens(ctx context.Context, keyID int64) ([]Token, error) {
 	var out []Token
 	for rows.Next() {
 		var t Token
-		var enabled, created int
+		var enabled, created, hasSecret int
 		var lastUsed, revoked sql.NullInt64
 		if err := rows.Scan(&t.ID, &t.KeyID, &t.Name, &t.Provider, &t.Prefix, &t.StreamMode, &t.ServerTools,
-			&enabled, &created, &lastUsed, &revoked); err != nil {
+			&enabled, &created, &lastUsed, &revoked, &hasSecret); err != nil {
 			return nil, err
 		}
 		t.Enabled = enabled != 0
+		t.SecretAvailable = hasSecret != 0
 		t.CreatedAt = time.Unix(int64(created), 0)
 		if lastUsed.Valid {
 			v := time.Unix(lastUsed.Int64, 0)
@@ -406,8 +423,8 @@ func (s *Store) TouchToken(ctx context.Context, id int64) {
 // UpdateToken меняет название, провайдера, режим потока, политику серверных инструментов и активность.
 func (s *Store) UpdateToken(ctx context.Context, t Token) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE tokens SET name=?, provider=?, stream_mode=?, server_tools=?, enabled=? WHERE id=?`,
-		t.Name, t.Provider, t.StreamMode, t.ServerTools, boolInt(t.Enabled), t.ID)
+		`UPDATE tokens SET key_id=?, name=?, provider=?, stream_mode=?, server_tools=?, enabled=? WHERE id=?`,
+		t.KeyID, t.Name, t.Provider, t.StreamMode, t.ServerTools, boolInt(t.Enabled), t.ID)
 	return err
 }
 
