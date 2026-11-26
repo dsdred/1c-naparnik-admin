@@ -739,10 +739,15 @@ async function renderTokens(main) {
     </div>
     <div class="card">
       <table>
-        <thead><tr><th>Название</th><th>Ключ</th><th>Провайдер</th><th>Префикс</th><th>Поток</th><th>Последний</th><th></th></tr></thead>
+        <thead><tr><th style="width:20px"></th><th>Название</th><th>Ключ</th><th>Провайдер</th><th>Префикс</th><th>Поток</th><th>Последний</th><th></th></tr></thead>
         <tbody>
-          ${tokens.map((t) => `<tr>
-            <td>${esc(t.name)} ${t.revoked_at ? '<span class="badge crit">отозван</span>' : t.enabled ? '' : '<span class="badge warn">выключен</span>'}</td>
+          ${tokens.map((t) => {
+            const dot = t.revoked_at
+              ? ['crit', 'отозван']
+              : (t.enabled ? ['ok', 'активен'] : ['warn', 'выключен']);
+            return `<tr>
+            <td><span class="dot ${dot[0]}" title="${dot[1]}"></span></td>
+            <td>${esc(t.name)}</td>
             <td class="small muted">${esc(keyName(t.key_id))}<br>
               <span class="mono" style="font-size:11.5px;color:var(--muted-2)">${esc(keyHint(t.key_id))}</span></td>
             <td class="small muted">${esc(providerLabel(t.provider))}</td>
@@ -755,7 +760,8 @@ async function renderTokens(main) {
               ${iconBtn(t.enabled ? 'powerOff' : 'powerOn', t.enabled ? 'Выключить' : 'Включить', `toggleToken(${t.id}, ${!t.enabled})`)}
               ${iconBtn('revoke', 'Отозвать — IDE перестанет подключаться', `revokeToken(${t.id})`, 'danger')}
             </td>
-          </tr>`).join('') || '<tr><td colspan="7" class="muted">Пока нет токенов</td></tr>'}
+          </tr>`;
+          }).join('') || '<tr><td colspan="8" class="muted">Пока нет токенов</td></tr>'}
         </tbody>
       </table>
     </div>`;
@@ -826,7 +832,15 @@ function openTokenEdit(id) {
   wrap.id = 'token-modal';
   wrap.innerHTML = `
     <div class="modal">
-      <h2 style="margin-top:0">Изменить токен</h2>
+      <div class="row" style="align-items:center;margin-bottom:14px">
+        <h2 style="margin:0">Изменить токен</h2>
+        <span class="spacer"></span>
+        <label class="switch" title="${t.revoked_at ? 'Токен отозван — включить нельзя, только перевыпустить' : 'Включить или выключить токен'}">
+          <input type="checkbox" id="te_enabled" ${t.enabled && !t.revoked_at ? 'checked' : ''} ${t.revoked_at ? 'disabled' : ''}>
+          <span class="track"><span class="knob"></span></span>
+          <span class="switch-label">включён</span>
+        </label>
+      </div>
       <div class="grid">
         <label>Название<input id="te_name" value="${esc(t.name)}"></label>
         <label>Ключ Напарника${ddHTML('te_key',
@@ -838,10 +852,6 @@ function openTokenEdit(id) {
           { value: 'final', label: 'final — цельным куском' },
           { value: 'deltas', label: 'deltas — по мере генерации' },
         ], t.stream_mode || '', '')}</label>
-        <label>Состояние${ddHTML('te_enabled', [
-          { value: '1', label: 'включён' },
-          { value: '0', label: 'выключен' },
-        ], t.enabled ? '1' : '0', '')}</label>
       </div>
       <label style="display:block;margin-top:14px">Токен
         <div class="row" style="gap:6px;flex-wrap:nowrap">
@@ -897,12 +907,17 @@ function closeTokenEdit() {
 async function saveTokenEdit(id) {
   const name = document.getElementById('te_name').value.trim();
   if (!name) return toast('Название не может быть пустым', true);
-  const key_id = Number(ddValue('te_key'));
-  const provider = ddValue('te_provider');
-  const stream_mode = ddValue('te_stream');
-  const enabled = ddValue('te_enabled') === '1';
+  const body = {
+    key_id: Number(ddValue('te_key')),
+    name,
+    provider: ddValue('te_provider'),
+    stream_mode: ddValue('te_stream'),
+  };
+  // Отозванный токен переключателем не оживить — флаг не отправляем.
+  const chk = document.getElementById('te_enabled');
+  if (chk && !chk.disabled) body.enabled = chk.checked;
   try {
-    await api('/api/tokens/' + id, { method: 'PATCH', body: { key_id, name, provider, stream_mode, enabled } });
+    await api('/api/tokens/' + id, { method: 'PATCH', body });
     closeTokenEdit();
     toast('Сохранено');
     go('tokens');
