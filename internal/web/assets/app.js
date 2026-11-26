@@ -1550,7 +1550,7 @@ Model: ${c.model}`,
     id: 'zed',
     name: 'Zed',
     note: 'settings.json',
-    verified: false,
+    verified: true,
     text: (c) => `"language_models": {
   "openai": {
     "api_url": "${c.openai_url}",
