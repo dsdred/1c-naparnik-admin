@@ -76,6 +76,17 @@ func (r *Reply) Text() string {
 	return strings.Join(parts, "\n\n")
 }
 
+// Reasoning собирает рассуждения модели из всех фрагментов ответа.
+func (r *Reply) Reasoning() string {
+	parts := make([]string, 0, len(r.Parts))
+	for _, p := range r.Parts {
+		if p.Reasoning != "" {
+			parts = append(parts, p.Reasoning)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
 // ToolCalls собирает вызовы инструментов из всех фрагментов.
 func (r *Reply) ToolCalls() []naparnik.ToolCall {
 	var out []naparnik.ToolCall
@@ -96,6 +107,8 @@ type Input struct {
 
 	// OnText вызывается на каждую дельту текста (режим deltas).
 	OnText func(text string)
+	// OnReasoning вызывается на каждую дельту рассуждения (reasoning_content).
+	OnReasoning func(text string)
 	// OnServerTool вызывается, когда Напарник запросил серверный инструмент.
 	OnServerTool func(name string)
 }
@@ -225,8 +238,13 @@ func (e *Engine) Execute(ctx context.Context, in Input) (*Reply, error) {
 				lastUUID = p.UUID
 			}
 			if !p.Finished {
-				if in.OnText != nil && p.ContentDelta != nil && p.ContentDelta.Content != "" {
-					in.OnText(p.ContentDelta.Content)
+				if p.ContentDelta != nil {
+					if p.ContentDelta.ReasoningContent != "" && in.OnReasoning != nil {
+						in.OnReasoning(p.ContentDelta.ReasoningContent)
+					}
+					if p.ContentDelta.Content != "" && in.OnText != nil {
+						in.OnText(p.ContentDelta.Content)
+					}
 				}
 				return
 			}

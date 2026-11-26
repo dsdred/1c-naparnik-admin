@@ -1596,7 +1596,7 @@ gemini --model ${c.model}`,
     id: 'opencode',
     name: 'OpenCode',
     note: 'opencode.jsonc',
-    verified: false,
+    verified: true,
     text: (c) => `{
   "provider": {
     "naparnik": {

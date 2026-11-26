@@ -102,3 +102,16 @@ func TestBuildCompletion(t *testing.T) {
 		t.Fatalf("content: %v", msg["content"])
 	}
 }
+
+func TestBuildCompletionReasoning(t *testing.T) {
+	reply := &gateway.Reply{Parts: []gateway.Part{{Text: "ответ", Reasoning: "думаю"}}}
+	out := buildCompletion("naparnik", reply)
+	choice := out["choices"].([]any)[0].(map[string]any)
+	msg := choice["message"].(map[string]any)
+	if msg["reasoning_content"] != "думаю" {
+		t.Fatalf("reasoning_content: %v", msg["reasoning_content"])
+	}
+	if msg["content"] != "ответ" {
+		t.Fatalf("content: %v", msg["content"])
+	}
+}

@@ -117,6 +117,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		input.OnText = func(text string) {
 			sw.Event("", chunkJSON(req.Model, map[string]any{"content": text}, nil, nil))
 		}
+		input.OnReasoning = func(text string) {
+			sw.Event("", chunkJSON(req.Model, map[string]any{"reasoning_content": text}, nil, nil))
+		}
 	}
 	input.OnServerTool = func(string) { sw.Start() }
 
@@ -133,6 +136,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	sw.Event("", chunkJSON(req.Model, map[string]any{"role": "assistant", "content": ""}, nil, nil))
 
 	if streamMode != "deltas" {
+		if r := reply.Reasoning(); r != "" {
+			sw.Event("", chunkJSON(req.Model, map[string]any{"reasoning_content": r}, nil, nil))
+		}
 		if text := reply.Text(); text != "" {
 			sw.Event("", chunkJSON(req.Model, map[string]any{"content": text}, nil, nil))
 		}
@@ -331,6 +337,11 @@ func contentText(raw json.RawMessage) (string, bool, error) {
 
 func buildCompletion(model string, reply *gateway.Reply) map[string]any {
 	msg := map[string]any{"role": "assistant", "content": reply.Text()}
+	// Рассуждения Напарника отдаём как reasoning_content — так их показывают
+	// Cline, Roo Code, Kilo Code, OpenCode и другие OpenAI-совместимые клиенты.
+	if r := reply.Reasoning(); r != "" {
+		msg["reasoning_content"] = r
+	}
 	if calls := reply.ToolCalls(); len(calls) > 0 {
 		out := make([]map[string]any, 0, len(calls))
 		for _, c := range calls {
