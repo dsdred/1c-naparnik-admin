@@ -359,7 +359,11 @@ async function boot() {
 function renderSetup() {
   app.innerHTML = `
     <div class="login card">
-      <div class="login-brand">${LOGO}<span>Напарник<small>админка шлюза</small></span></div>
+      <div class="login-head">
+        <div class="login-logo">${LOGO}</div>
+        <div class="login-title">Напарник</div>
+        <div class="login-sub">Админка шлюза</div>
+      </div>
       <h1>Первый запуск</h1>
       <p class="muted small">Задайте пароль администратора. Он хранится в виде хеша argon2id.</p>
       <div class="grid">
@@ -385,7 +389,11 @@ async function setupPassword() {
 function renderLogin() {
   app.innerHTML = `
     <div class="login card">
-      <div class="login-brand">${LOGO}<span>Напарник<small>админка шлюза</small></span></div>
+      <div class="login-head">
+        <div class="login-logo">${LOGO}</div>
+        <div class="login-title">Напарник</div>
+        <div class="login-sub">Админка шлюза</div>
+      </div>
       <h1>Вход в админку</h1>
       <div class="grid">
         <input id="pw" type="password" placeholder="Пароль" onkeydown="if(event.key==='Enter')login()">

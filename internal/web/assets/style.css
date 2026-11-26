@@ -136,15 +136,43 @@ a:hover { text-decoration: underline; }
 }
 .brand small { display: block; color: var(--muted-2); font-weight: 400; font-size: 11px; letter-spacing: .3px; text-transform: uppercase; }
 
-.login-brand {
+/* шапка экранов входа и первого запуска: логотип и подписи по центру,
+   форма ниже остаётся выровненной по левому краю */
+.login-head {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 18px;
-  font-size: 15px;
-  font-weight: 600;
+  text-align: center;
+  padding-bottom: 18px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--border-soft);
 }
-.login-brand small { display: block; color: var(--muted-2); font-weight: 400; font-size: 11px; letter-spacing: .3px; text-transform: uppercase; }
+.login-logo {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  margin-bottom: 12px;
+  line-height: 0;
+}
+.login-logo .brand-logo .bl {
+  width: 250px;
+  max-width: 100%;
+  height: auto;
+}
+.login-title {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: .2px;
+}
+.login-sub {
+  margin-top: 3px;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+}
 
 .nav { display: flex; flex-direction: column; gap: 2px; }
 .nav-group {
@@ -718,8 +746,6 @@ svg.ico {
 [data-theme="light"] .brand-logo .bl-dark.bl-full { display: none; }
 [data-theme="light"] .brand-logo .bl-light.bl-full { display: block; }
 
-.login-brand .brand-logo .bl { height: 38px; }
-
 /* свёрнутый (узкий) сайдбар: только знак NA */
 @media (max-width: 860px) {
   /* !important перебивает более специфичные правила тем выше (.bl-dark.bl-full) */
@@ -728,6 +754,13 @@ svg.ico {
   [data-theme="light"] .brand-logo .bl.bl-dark.bl-sym { display: none; }
   [data-theme="light"] .brand-logo .bl.bl-light.bl-sym { display: block; }
 }
+
+/* на экранах входа и первого запуска логотип всегда полный — даже на телефоне */
+.login-logo .brand-logo .bl.bl-full { display: none !important; }
+.login-logo .brand-logo .bl.bl-dark.bl-full { display: block !important; }
+[data-theme="light"] .login-logo .brand-logo .bl.bl-dark.bl-full { display: none !important; }
+[data-theme="light"] .login-logo .brand-logo .bl.bl-light.bl-full { display: block !important; }
+.login-logo .brand-logo .bl.bl-sym { display: none !important; }
 
 /* ---------- светлая тема ---------- */
 
