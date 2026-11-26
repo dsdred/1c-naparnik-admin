@@ -1,13 +1,20 @@
 package web
 
 import (
+	"bytes"
 	"embed"
 	"io/fs"
 	"net/http"
+	"strconv"
+	"time"
 )
 
 //go:embed assets/*
 var assets embed.FS
+
+// stamp — метка запуска процесса. Подставляется в ссылки на статику,
+// чтобы браузер не взял закешированные app.js и style.css после обновления.
+var stamp = strconv.FormatInt(time.Now().Unix(), 10)
 
 // FS возвращает файловую систему со статикой админки.
 func FS() fs.FS {
@@ -38,6 +45,8 @@ func Handler() http.Handler {
 			http.Error(w, "не удалось загрузить интерфейс", http.StatusInternalServerError)
 			return
 		}
+		data = bytes.ReplaceAll(data, []byte(`href="/style.css"`), []byte(`href="/style.css?v=`+stamp+`"`))
+		data = bytes.ReplaceAll(data, []byte(`src="/app.js"`), []byte(`src="/app.js?v=`+stamp+`"`))
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(data)
 	})
