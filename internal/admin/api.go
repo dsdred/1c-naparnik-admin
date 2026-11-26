@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -683,21 +684,48 @@ func (s *Server) getListeners(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, s.Cfg.Listeners)
 }
 
+// validateListeners проверяет набор слушателей из админки: адреса, типы, дубли
+// и то, что после применения останется доступ к самой админке.
+func validateListeners(list []config.Listener) error {
+	enabled, enabledAdmin := 0, 0
+	seen := map[string]bool{}
+	for _, l := range list {
+		if _, _, err := net.SplitHostPort(l.Addr); err != nil {
+			return fmt.Errorf("Неверный адрес: %s", l.Addr)
+		}
+		if l.Kind != config.KindGateway && l.Kind != config.KindAdmin {
+			return fmt.Errorf("Неизвестный тип слушателя: %s", l.Kind)
+		}
+		if seen[l.Addr] {
+			return fmt.Errorf("Адрес указан дважды: %s", l.Addr)
+		}
+		seen[l.Addr] = true
+		if l.Disabled {
+			continue
+		}
+		enabled++
+		if l.Kind == config.KindAdmin {
+			enabledAdmin++
+		}
+	}
+	if enabled == 0 {
+		return errors.New("Нужен хотя бы один включённый слушатель")
+	}
+	if enabledAdmin == 0 {
+		return errors.New("Нельзя выключить последнюю админку — потеряете доступ к настройкам")
+	}
+	return nil
+}
+
 func (s *Server) putListeners(w http.ResponseWriter, r *http.Request) {
 	var list []config.Listener
 	if err := json.NewDecoder(r.Body).Decode(&list); err != nil {
 		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "Не удалось разобрать запрос"})
 		return
 	}
-	for _, l := range list {
-		if _, _, err := net.SplitHostPort(l.Addr); err != nil {
-			httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "Неверный адрес: " + l.Addr})
-			return
-		}
-		if l.Kind != config.KindGateway && l.Kind != config.KindAdmin {
-			httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "Неизвестный тип слушателя: " + l.Kind})
-			return
-		}
+	if err := validateListeners(list); err != nil {
+		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
 	}
 	if s.ApplyListeners != nil {
 		if err := s.ApplyListeners(list); err != nil {

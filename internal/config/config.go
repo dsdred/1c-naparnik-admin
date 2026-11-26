@@ -27,6 +27,8 @@ type Listener struct {
 	Kind     string `yaml:"kind" json:"kind"`
 	CertFile string `yaml:"cert_file,omitempty" json:"cert_file,omitempty"`
 	KeyFile  string `yaml:"key_file,omitempty" json:"key_file,omitempty"`
+	// Disabled выключает слушатель: запись остаётся в конфиге, порт не открывается.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled"`
 }
 
 // Duration — time.Duration, который читается из YAML как "5m", "2h".
@@ -200,7 +202,7 @@ func (c *Config) ModelName() string {
 func (c *Config) GatewayAddrs() []string {
 	var out []string
 	for _, l := range c.Listeners {
-		if l.Kind == KindGateway {
+		if l.Kind == KindGateway && !l.Disabled {
 			out = append(out, l.Addr)
 		}
 	}

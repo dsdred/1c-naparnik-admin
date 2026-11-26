@@ -119,6 +119,10 @@ func (a *App) Start(ctx context.Context) error {
 		a.Log.Warn("не удалось почистить старые сессии", "err", err)
 	}
 	for _, l := range a.Cfg.Listeners {
+		if l.Disabled {
+			a.Log.Info("слушатель выключен", "addr", l.Addr, "kind", l.Kind)
+			continue
+		}
 		if err := a.startListener(l); err != nil {
 			return err
 		}
@@ -129,6 +133,9 @@ func (a *App) Start(ctx context.Context) error {
 func listenerKey(l config.Listener) string { return l.Kind + "|" + l.Addr }
 
 func (a *App) startListener(l config.Listener) error {
+	if l.Disabled {
+		return nil
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	key := listenerKey(l)
@@ -175,6 +182,9 @@ func (a *App) startListener(l config.Listener) error {
 func (a *App) ApplyListeners(list []config.Listener) error {
 	desired := map[string]config.Listener{}
 	for _, l := range list {
+		if l.Disabled {
+			continue
+		}
 		desired[listenerKey(l)] = l
 	}
 

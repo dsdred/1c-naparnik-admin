@@ -1182,9 +1182,9 @@ function paintListeners(main) {
     <h1>Слушатели ${infoBtn('Можно слушать несколько портов одновременно. Для доступа из локальной сети укажите 0.0.0.0:порт. Админку держите на 127.0.0.1, если не нужен удалённый доступ.', 'Про слушателей')}</h1>
     <div class="card">
       <table>
-        <thead><tr><th>Адрес</th><th>Тип</th><th></th></tr></thead>
+        <thead><tr><th>Адрес</th><th>Тип</th><th>Включён</th><th></th></tr></thead>
         <tbody id="listeners-body">
-          ${state.listeners.map((l, i) => listenerRow(l, i)).join('') || '<tr><td colspan="3" class="muted">Слушателей нет — добавьте хотя бы один.</td></tr>'}
+          ${state.listeners.map((l, i) => listenerRow(l, i)).join('') || '<tr><td colspan="4" class="muted">Слушателей нет — добавьте хотя бы один.</td></tr>'}
         </tbody>
       </table>
       <div class="row" style="margin-top:12px">
@@ -1203,6 +1203,12 @@ function listenerRow(l, i) {
   return `<tr>
     <td><input value="${esc(l.addr)}" data-addr="${i}" style="width:100%"></td>
     <td>${ddHTML('lkind-' + i, kinds, l.kind, '', 'data-kind="' + i + '"')}</td>
+    <td>
+      <label class="switch" title="${l.disabled ? 'Включить слушатель' : 'Выключить слушатель'}">
+        <input type="checkbox" ${l.disabled ? '' : 'checked'} onchange="setListenerEnabled(${i}, this.checked)">
+        <span class="track"><span class="knob"></span></span>
+      </label>
+    </td>
     <td class="actions">${iconBtn('trash', 'Удалить слушатель', 'removeListenerRow(' + i + ')', 'danger')}</td>
   </tr>`;
 }
@@ -1220,8 +1226,30 @@ function syncListenerInputs() {
 
 function addListenerRow() {
   syncListenerInputs();
-  state.listeners.push({ addr: '127.0.0.1:47833', kind: 'gateway' });
+  state.listeners.push({ addr: '127.0.0.1:47833', kind: 'gateway', disabled: false });
   paintListeners(document.getElementById('main'));
+}
+
+// listenerPayload собирает тело запроса из state, сохраняя выключенные слушатели.
+function listenerPayload() {
+  return state.listeners
+    .map((l) => ({ addr: String(l.addr || '').trim(), kind: l.kind, disabled: !!l.disabled }))
+    .filter((l) => l.addr !== '');
+}
+
+// setListenerEnabled включает и выключает слушатель сразу, без кнопки «Применить».
+async function setListenerEnabled(i, on) {
+  syncListenerInputs();
+  const l = state.listeners[i];
+  if (!l) return;
+  l.disabled = !on;
+  try {
+    await api('/api/listeners', { method: 'PUT', body: listenerPayload() });
+    toast(on ? 'Слушатель включён' : 'Слушатель выключен');
+  } catch (e) {
+    toast(e.message, true);
+  }
+  go('listeners');
 }
 
 function removeListenerRow(i) {
@@ -1232,9 +1260,7 @@ function removeListenerRow(i) {
 
 async function saveListeners() {
   syncListenerInputs();
-  const list = state.listeners
-    .map((l) => ({ addr: String(l.addr || '').trim(), kind: l.kind }))
-    .filter((l) => l.addr !== '');
+  const list = listenerPayload();
   if (!list.length) return toast('Нужен хотя бы один слушатель', true);
   const dup = list.find((l, i) => list.findIndex((x) => x.addr === l.addr) !== i);
   if (dup) return toast('Адрес указан дважды: ' + dup.addr, true);

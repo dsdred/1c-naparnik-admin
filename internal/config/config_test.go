@@ -124,3 +124,16 @@ func TestIsLoopback(t *testing.T) {
 		}
 	}
 }
+
+func TestGatewayAddrsSkipsDisabled(t *testing.T) {
+	cfg := Default()
+	cfg.Listeners = []Listener{
+		{Addr: "127.0.0.1:5001", Kind: KindGateway},
+		{Addr: "127.0.0.1:5002", Kind: KindGateway, Disabled: true},
+		{Addr: "127.0.0.1:5003", Kind: KindAdmin},
+	}
+	got := cfg.GatewayAddrs()
+	if len(got) != 1 || got[0] != "127.0.0.1:5001" {
+		t.Fatalf("в сниппеты должны попадать только включённые шлюзы, получено %v", got)
+	}
+}
