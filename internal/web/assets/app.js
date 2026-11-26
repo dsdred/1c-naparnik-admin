@@ -628,6 +628,7 @@ const ACTION_ICONS = {
   trash: '<path d="M4 7h16"/><path d="M9 7V5h6v2"/><path d="M6 7l1 13h10l1-13"/>',
   revoke: '<circle cx="12" cy="12" r="8"/><path d="M6.4 17.6L17.6 6.4"/>',
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5h10"/>',
+  download: '<path d="M12 4v10"/><path d="M8 11l4 4 4-4"/><path d="M5 19h14"/>',
   eye: '<path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="3"/>',
   rotate: '<path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 3.5V9h-5.5"/>',
   deltas: '<path d="M4 12h2.5M10.75 12h2.5M17.5 12H20"/>',
@@ -1161,23 +1162,24 @@ async function renderLogs(main) {
   };
 
   main.innerHTML = `
-    <h1>Журнал запросов ${infoBtn('Что именно спрашивали пользователи: последняя реплика каждого запроса, до 2000 символов. Старые записи можно удалить кнопкой справа.', 'Про журнал')}</h1>
-    <div class="card">
-      <div class="row small muted">
-        <span>Всего записей: ${fmtNum(res.total)}</span>
-        <span class="spacer"></span>
+    <h1>Журнал запросов ${infoBtn('Что именно спрашивали пользователи: последняя реплика каждого запроса, до 2000 символов.', 'Про журнал')}</h1>
+
+    <section class="card settings-section">
+      <h2>Хранение и выгрузка ${infoBtn('Записи старше указанного числа дней удаляются безвозвратно; 0 — удалить весь журнал. Выгрузка — CSV, открывается в Excel.', 'Про хранение и выгрузку')}</h2>
+      <div class="row">
         <label class="inline-label">Удалить записи старше
-          <select id="log-days" style="width:auto;margin-top:0">
-            <option value="7">7 дней</option>
-            <option value="30" selected>30 дней</option>
-            <option value="90">90 дней</option>
-            <option value="365">года</option>
-            <option value="0">все записи</option>
-          </select>
+          <input id="log-days" type="number" min="0" max="3650" step="1" value="30" style="width:88px;margin-top:0">
+          дней
         </label>
-        <button class="btn ghost small" onclick="exportLogs()">Выгрузить CSV</button>
-        <button class="btn ghost small" onclick="purgeLogs()">Очистить</button>
+        <span class="spacer"></span>
+        ${iconBtn('download', 'Выгрузить журнал в CSV', 'exportLogs()')}
+        ${iconBtn('trash', 'Удалить записи', 'purgeLogs()', 'danger')}
       </div>
+    </section>
+
+    <section class="card settings-section">
+      <h2>Записи ${infoBtn('Показаны последние 100 записей. Выгрузка в CSV отдаёт весь журнал.', 'Про список записей')}</h2>
+      <div class="row small muted" style="margin-bottom:10px">Всего записей: ${fmtNum(res.total)}</div>
       <table>
         <thead><tr><th>Время</th><th>Токен</th><th>Запрос</th><th>Протокол</th><th>Статус</th><th>Токены</th><th>мс</th></tr></thead>
         <tbody>
@@ -1196,7 +1198,7 @@ async function renderLogs(main) {
           </tr>`).join('') || '<tr><td colspan="7" class="muted">Записей нет</td></tr>'}
         </tbody>
       </table>
-    </div>`;
+    </section>`;
 }
 
 // exportLogs скачивает журнал файлом CSV: сервер отдаёт его вложением.
@@ -1204,16 +1206,21 @@ function exportLogs() {
   window.location.href = '/api/logs/export';
 }
 
-// purgeLogs удаляет записи журнала старше выбранного срока (0 — все).
+// purgeLogs удаляет записи журнала старше введённого числа дней (0 — все).
 async function purgeLogs() {
-  const sel = document.getElementById('log-days');
-  const days = Number(sel.value);
-  const label = sel.options[sel.selectedIndex].textContent;
+  const field = document.getElementById('log-days');
+  const raw = field.value.trim();
+  const days = Number(raw);
+  if (raw === '' || !Number.isFinite(days) || days < 0 || !Number.isInteger(days)) {
+    toast('Укажите целое число дней (0 — удалить все записи)', true);
+    field.focus();
+    return;
+  }
   const ok = await confirmDialog({
-    title: days ? 'Удалить старые записи?' : 'Очистить журнал полностью?',
-    text: days
-      ? `Будут удалены записи старше ${label}. Отменить это действие нельзя.`
-      : 'Будут удалены все записи журнала. Отменить это действие нельзя.',
+    title: days === 0 ? 'Удалить весь журнал?' : 'Удалить старые записи?',
+    text: days === 0
+      ? 'Будут удалены все записи журнала. Отменить это действие нельзя.'
+      : `Будут удалены записи старше ${days} дн. Отменить это действие нельзя.`,
     ok: 'Удалить',
     danger: true,
   });
