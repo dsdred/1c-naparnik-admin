@@ -21,7 +21,7 @@ type Poller struct {
 	store  *store.Store
 	client *naparnik.Client
 	cipher *secrets.Cipher
-	cfg    config.Source
+	cfg    *config.Runtime
 	log    *slog.Logger
 
 	mu     sync.Mutex
@@ -30,7 +30,7 @@ type Poller struct {
 }
 
 // New создаёт поллер.
-func New(st *store.Store, client *naparnik.Client, cipher *secrets.Cipher, cfg config.Source, log *slog.Logger) *Poller {
+func New(st *store.Store, client *naparnik.Client, cipher *secrets.Cipher, cfg *config.Runtime, log *slog.Logger) *Poller {
 	return &Poller{
 		store: st, client: client, cipher: cipher, cfg: cfg, log: log,
 		flight: map[int64]chan struct{}{}, levels: map[int64]string{},
@@ -42,13 +42,22 @@ func (p *Poller) Start(ctx context.Context) {
 	go func() {
 		// Первый опрос — сразу, чтобы админка не была пустой.
 		p.RefreshAll(ctx)
-		ticker := time.NewTicker(p.cfg.Snapshot().BudgetPollInterval.D())
-		defer ticker.Stop()
+		last := time.Now()
 		for {
+			cfg, changed := p.cfg.Watch()
+			timer := time.NewTimer(time.Until(last.Add(cfg.BudgetPollInterval.D())))
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return
-			case <-ticker.C:
+			case <-changed:
+				timer.Stop()
+			case <-timer.C:
+				// An interval increase may have raced with the timer firing.
+				if time.Since(last) < p.cfg.Snapshot().BudgetPollInterval.D() {
+					continue
+				}
+				last = time.Now()
 				p.RefreshAll(ctx)
 			}
 		}

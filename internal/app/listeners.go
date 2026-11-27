@@ -7,15 +7,17 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"naparnikadmin/internal/config"
 )
 
 type listener struct {
-	cfg config.Listener
-	srv *http.Server
-	ln  net.Listener
+	cfg  config.Listener
+	srv  *http.Server
+	ln   net.Listener
+	cert atomic.Pointer[tls.Certificate]
 }
 
 // listenerKey includes TLS paths so a certificate change replaces the server.
@@ -23,7 +25,21 @@ func listenerKey(l config.Listener) string {
 	return l.Kind + "|" + l.Addr + "|" + l.CertFile + "|" + l.KeyFile
 }
 
-func (a *App) prepareListener(l config.Listener) (*listener, error) {
+func loadListenerCertificate(l config.Listener) (*tls.Certificate, error) {
+	if l.CertFile == "" && l.KeyFile == "" {
+		return nil, nil
+	}
+	if !l.TLS() {
+		return nil, fmt.Errorf("слушатель %s: нужны оба файла — сертификат и ключ", l.Addr)
+	}
+	pair, err := tls.LoadX509KeyPair(l.CertFile, l.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("слушатель %s: сертификат: %w", l.Addr, err)
+	}
+	return &pair, nil
+}
+
+func (a *App) prepareListener(l config.Listener, cert *tls.Certificate) *listener {
 	var handler http.Handler
 	if l.Kind == config.KindAdmin {
 		handler = a.AdminHandler()
@@ -36,17 +52,17 @@ func (a *App) prepareListener(l config.Listener) (*listener, error) {
 		ReadHeaderTimeout: 15 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-	if l.CertFile != "" || l.KeyFile != "" {
-		if !l.TLS() {
-			return nil, fmt.Errorf("слушатель %s: нужны оба файла — сертификат и ключ", l.Addr)
+	active := &listener{cfg: l, srv: srv}
+	if cert != nil {
+		active.cert.Store(cert)
+		srv.TLSConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+				return active.cert.Load(), nil
+			},
 		}
-		pair, err := tls.LoadX509KeyPair(l.CertFile, l.KeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("слушатель %s: сертификат: %w", l.Addr, err)
-		}
-		srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{pair}}
 	}
-	return &listener{cfg: l, srv: srv}, nil
+	return active
 }
 
 func (a *App) serveListener(l *listener) {
@@ -81,6 +97,7 @@ func (a *App) applyListeners(list []config.Listener, save func() error) error {
 		return http.ErrServerClosed
 	}
 	desired := make(map[string]*listener, len(list))
+	reload := make(map[*listener]*tls.Certificate)
 	var added, removed []*listener
 	for _, l := range list {
 		if l.Disabled {
@@ -90,14 +107,18 @@ func (a *App) applyListeners(list []config.Listener, save func() error) error {
 		if _, ok := desired[key]; ok {
 			continue
 		}
-		if active, ok := a.servers[key]; ok {
-			desired[key] = active
-			continue
-		}
-		prepared, err := a.prepareListener(l)
+		cert, err := loadListenerCertificate(l)
 		if err != nil {
 			return err
 		}
+		if active, ok := a.servers[key]; ok {
+			desired[key] = active
+			if cert != nil {
+				reload[active] = cert
+			}
+			continue
+		}
+		prepared := a.prepareListener(l, cert)
 		desired[key] = prepared
 		added = append(added, prepared)
 	}
@@ -166,6 +187,9 @@ func (a *App) applyListeners(list []config.Listener, save func() error) error {
 		if err := save(); err != nil {
 			return rollback(err)
 		}
+	}
+	for active, cert := range reload {
+		active.cert.Store(cert)
 	}
 	for _, active := range removed {
 		_ = active.ln.Close()
