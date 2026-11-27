@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,13 +24,11 @@ import (
 const token = "review-local-test-token"
 
 type fixture struct {
-	app            *app.App
-	gateway, admin http.Handler
-	tokenID        int64
-	conversations  atomic.Int64
+	gateway       http.Handler
+	conversations atomic.Int64
 }
 
-func newFixture(t *testing.T, mode string, packet string, beforePacket ...func()) *fixture {
+func newFixture(t *testing.T, mode string, packets ...string) *fixture {
 	t.Helper()
 	f := &fixture{}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -39,11 +36,10 @@ func newFixture(t *testing.T, mode string, packet string, beforePacket ...func()
 		case r.URL.Path == "/conversations":
 			fmt.Fprintf(w, `{"uuid":"dialog-%d"}`, f.conversations.Add(1))
 		case strings.HasSuffix(r.URL.Path, "/messages"):
-			for _, hook := range beforePacket {
-				hook()
-			}
 			w.Header().Set("Content-Type", "text/event-stream")
-			fmt.Fprintf(w, "data: %s\n\n", packet)
+			for _, packet := range packets {
+				fmt.Fprintf(w, "data: %s\n\n", packet)
+			}
 		case strings.HasSuffix(r.URL.Path, "/context_tokens"):
 			io.WriteString(w, `{}`)
 		default:
@@ -52,70 +48,52 @@ func newFixture(t *testing.T, mode string, packet string, beforePacket ...func()
 		}
 	}))
 	t.Cleanup(upstream.Close)
-	dir := t.TempDir()
-	cfg, err := config.Load(filepath.Join(dir, "config.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.DataDir = dir
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
 	cfg.UpstreamBase = upstream.URL
 	cfg.StreamMode = mode
 	cfg.RequestTimeout = config.Duration(3 * time.Second)
-	f.app, err = app.New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	a, err := app.New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := f.app.Close(); err != nil {
+		if err := a.Close(); err != nil {
 			t.Error(err)
 		}
 	})
-	enc, err := f.app.Cipher.Encrypt("upstream-fixture")
+	enc, err := a.Cipher.Encrypt("upstream-fixture")
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	keyID, err := f.app.Store.CreateKey(ctx, "review", "review", enc)
+	keyID, err := a.Store.CreateKey(ctx, "review", "review", enc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.tokenID, err = f.app.Store.CreateToken(ctx, store.Token{KeyID: keyID, Name: "review", Enabled: true}, secrets.HashToken(token), "")
+	_, err = a.Store.CreateToken(ctx, store.Token{KeyID: keyID, Name: "review", Enabled: true}, secrets.HashToken(token), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.gateway, f.admin = f.app.GatewayHandler(), f.app.AdminHandler()
+	f.gateway = a.GatewayHandler()
 	return f
 }
 
 const finished = `{"uuid":"answer","role":"assistant","finished":true,"content":{"content":"ready"}}`
 const chat = `{"messages":[{"role":"user","content":"question"}]}`
 
-func request(h http.Handler, method, path, body, expectedToken, session string, c *http.Cookie) *httptest.ResponseRecorder {
+func request(h http.Handler, method, path, body, expectedToken, session string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("X-Requested-With", "test")
 	if expectedToken != "" {
 		r.Header.Set("Authorization", "Bearer "+expectedToken)
 	}
 	if session != "" {
 		r.Header.Set("X-Session-Id", session)
 	}
-	if c != nil {
-		r.AddCookie(c)
-	}
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	return w
-}
-
-func login(t *testing.T, f *fixture) *http.Cookie {
-	t.Helper()
-	w := request(f.admin, "POST", "/api/password", `{"password":"fixture-password"}`, "", "", nil)
-	cs := w.Result().Cookies()
-	if w.Code != 200 || len(cs) != 1 {
-		t.Fatalf("setup: %d %s", w.Code, w.Body)
-	}
-	return cs[0]
 }
 
 func TestSmokeAdapters(t *testing.T) {
@@ -129,15 +107,15 @@ func TestSmokeAdapters(t *testing.T) {
 				{"gemini", "/v1beta/models/naparnik:generateContent", `{"contents":[{"role":"user","parts":[{"text":"question"}]}]}`, "/v1beta/models/naparnik:streamGenerateContent", `{"contents":[{"role":"user","parts":[{"text":"question"}]}]}`, "finishReason"},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
-					w := request(f.gateway, "POST", tc.path, tc.body, "", "", nil)
+					w := request(f.gateway, "POST", tc.path, tc.body, "", "")
 					if w.Code != 401 {
 						t.Fatalf("missing token: %d", w.Code)
 					}
-					w = request(f.gateway, "POST", tc.path, tc.body, token, "json", nil)
+					w = request(f.gateway, "POST", tc.path, tc.body, token, "json")
 					if w.Code != 200 || !json.Valid(w.Body.Bytes()) || !strings.Contains(w.Body.String(), "ready") {
 						t.Fatalf("JSON: %d %s", w.Code, w.Body)
 					}
-					w = request(f.gateway, "POST", tc.streamPath, tc.streamBody, token, "stream", nil)
+					w = request(f.gateway, "POST", tc.streamPath, tc.streamBody, token, "stream")
 					if w.Code != 200 || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/event-stream") || !strings.Contains(w.Body.String(), "ready") || !strings.Contains(w.Body.String(), tc.terminal) {
 						t.Fatalf("SSE: %d %s", w.Code, w.Body)
 					}
@@ -154,7 +132,7 @@ func TestSmokeConcurrentChats(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			w := request(f.gateway, "POST", "/v1/chat/completions", chat, token, fmt.Sprintf("session-%d", i%8), nil)
+			w := request(f.gateway, "POST", "/v1/chat/completions", chat, token, fmt.Sprintf("session-%d", i%8))
 			if w.Code != 200 || !strings.Contains(w.Body.String(), "ready") {
 				t.Errorf("response: %d %s", w.Code, w.Body)
 			}
@@ -167,8 +145,8 @@ func TestSmokeConcurrentChats(t *testing.T) {
 }
 
 func TestRegressionTruncatedUpstreamIsNotSuccessful(t *testing.T) {
-	f := newFixture(t, "final", `{"uuid":"draft","role":"assistant","finished":false,"content_delta":{"content":"unfinished"}}`)
-	w := request(f.gateway, "POST", "/v1/chat/completions", chat, token, "truncated", nil)
+	f := newFixture(t, "final", `{"uuid":"input","role":"user","finished":true}`, `{"uuid":"draft","role":"assistant","finished":false,"content_delta":{"content":"unfinished"}}`)
+	w := request(f.gateway, "POST", "/v1/chat/completions", chat, token, "truncated")
 	if w.Code != 502 {
 		t.Fatalf("truncated upstream got %d, want 502: %s", w.Code, w.Body)
 	}
@@ -176,7 +154,7 @@ func TestRegressionTruncatedUpstreamIsNotSuccessful(t *testing.T) {
 
 func TestRegressionChatStreamKeepsCompletionID(t *testing.T) {
 	f := newFixture(t, "deltas", finished)
-	w := request(f.gateway, "POST", "/v1/chat/completions", `{"stream":true,"messages":[{"role":"user","content":"question"}]}`, token, "chat-ids", nil)
+	w := request(f.gateway, "POST", "/v1/chat/completions", `{"stream":true,"messages":[{"role":"user","content":"question"}]}`, token, "chat-ids")
 	ids := make(map[string]bool)
 	chunks := 0
 	for ev := range sse.Read(context.Background(), w.Body) {
@@ -196,12 +174,16 @@ func TestRegressionChatStreamKeepsCompletionID(t *testing.T) {
 }
 
 func TestRegressionResponsesStreamKeepsOutputID(t *testing.T) {
-	f := newFixture(t, "deltas", finished)
-	w := request(f.gateway, "POST", "/v1/responses", `{"input":"question","stream":true}`, token, "ids", nil)
-	var added, delta, done, finishedID string
-	addedCount := 0
+	f := newFixture(t, "deltas", `{"uuid":"answer","role":"assistant","finished":true,"content":{"content":"ready","tool_calls":[{"id":"call_1","function":{"name":"client_lookup","arguments":"{}"}}]}}`)
+	w := request(f.gateway, "POST", "/v1/responses", `{"input":"question","stream":true,"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}`, token, "ids")
+	type itemEvents struct {
+		added, delta, done, final string
+		addedCount                int
+	}
+	items := make(map[int]itemEvents)
 	for ev := range sse.Read(context.Background(), w.Body) {
 		var data struct {
+			Index    int                                    `json:"output_index"`
 			ItemID   string                                 `json:"item_id"`
 			Item     struct{ ID string }                    `json:"item"`
 			Response struct{ Output []struct{ ID string } } `json:"response"`
@@ -209,21 +191,29 @@ func TestRegressionResponsesStreamKeepsOutputID(t *testing.T) {
 		if err := json.Unmarshal([]byte(ev.Data), &data); err != nil {
 			t.Fatal(err)
 		}
+		events := items[data.Index]
 		switch ev.Name {
 		case "response.output_item.added":
-			addedCount++
-			added = data.Item.ID
-		case "response.output_text.delta":
-			delta = data.ItemID
+			events.addedCount++
+			events.added = data.Item.ID
+		case "response.output_text.delta", "response.function_call_arguments.delta":
+			events.delta = data.ItemID
 		case "response.output_item.done":
-			done = data.Item.ID
+			events.done = data.Item.ID
 		case "response.completed":
-			if len(data.Response.Output) > 0 {
-				finishedID = data.Response.Output[0].ID
+			for index, item := range data.Response.Output {
+				events := items[index]
+				events.final = item.ID
+				items[index] = events
 			}
+			continue
 		}
+		items[data.Index] = events
 	}
-	if addedCount != 1 || added == "" || added != delta || added != done || added != finishedID {
-		t.Fatalf("added events=%d, IDs added=%q delta=%q done=%q completed=%q", addedCount, added, delta, done, finishedID)
+	for index := range 2 {
+		e := items[index]
+		if e.addedCount != 1 || e.added == "" || e.added != e.delta || e.added != e.done || e.added != e.final {
+			t.Fatalf("output item %d has inconsistent events: %+v", index, e)
+		}
 	}
 }

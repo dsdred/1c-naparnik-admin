@@ -15,8 +15,8 @@ type Event struct {
 	Err  error
 }
 
-// Read разбирает поток SSE и отдаёт события в канал. Канал закрывается
-// при EOF, ошибке чтения или отмене контекста.
+// Read разбирает поток SSE. Ошибка чтения или неполный кадр передаются через
+// Err перед закрытием канала. EOF после полного кадра и отмена закрывают канал.
 func Read(ctx context.Context, r io.Reader) <-chan Event {
 	out := make(chan Event)
 	go func() {
