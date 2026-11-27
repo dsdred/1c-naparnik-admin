@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -257,6 +258,13 @@ func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string,
 			return nil, err
 		}
 	}
+	var recovered *recoveredTurn
+	if hasBinding && !forceNew && binding.PendingJSON != "" {
+		recovered, err = e.recoverTurn(ctx, in, binding)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	// Ищем в присланной истории последнюю реплику ассистента и её контрольную точку:
 	// продолжаем ту ветку, которую видит клиент, а не «последнюю отправленную».
@@ -264,14 +272,19 @@ func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string,
 	anchorFP, anchorIdx := anchorOf(in.Turns)
 	var anchor store.Checkpoint
 	haveAnchor := false
-	if hasBinding && !forceNew && anchorFP != "" {
-		if cp, ok, cerr := e.store.FindCheckpoint(ctx, in.Token.ID, in.Protocol, sessionKey, anchorFP); cerr == nil && ok {
-			anchor, haveAnchor = cp, true
+	if recovered == nil && hasBinding && !forceNew && anchorFP != "" {
+		anchor, haveAnchor, _ = e.store.FindCheckpoint(ctx, in.Token.ID, in.Protocol, sessionKey, anchorFP)
+		if !haveAnchor {
+			turn := in.Turns[anchorIdx]
+			if legacy := orderedAnswerDigest(turn.Text, turn.Calls); legacy != anchorFP {
+				anchor, haveAnchor, _ = e.store.FindCheckpoint(ctx, in.Token.ID, in.Protocol, sessionKey, legacy)
+			}
 		}
 	}
 
 	newConversation := forceNew
 	switch {
+	case recovered != nil:
 	case newConversation:
 	case haveAnchor:
 		// Продолжаем ветку из точки.
@@ -284,7 +297,7 @@ func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string,
 	}
 
 	fingerprint := fingerprintOf(in.Turns)
-	if !newConversation && !haveAnchor && sticky && binding.Fingerprint != "" && binding.Fingerprint != fingerprint {
+	if recovered == nil && !newConversation && !haveAnchor && sticky && binding.Fingerprint != "" && binding.Fingerprint != fingerprint {
 		// Sticky-сессия без точек: клиент начал другой чат.
 		newConversation = true
 	}
@@ -302,6 +315,13 @@ func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string,
 	var parent *string
 	turns := in.Turns
 	switch {
+	case recovered != nil:
+		conversation = binding.Conversation
+		turns = recovered.tail
+		if len(turns) > 0 {
+			p := recovered.packets[len(recovered.packets)-1].UUID
+			parent = &p
+		}
 	case newConversation:
 		conversation, err = e.client.CreateConversation(ctx, in.Key, "ru", "1c", "ru")
 		if err != nil {
@@ -349,6 +369,9 @@ func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string,
 	} else {
 		groups = groupTurns(turns)
 	}
+	if recovered != nil && len(recovered.tail) == 0 {
+		groups = recovered.remaining
+	}
 
 	reply := &Reply{}
 	var lastUUID string
@@ -374,18 +397,56 @@ func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string,
 	rounds := 0
 	// Разделитель между сообщениями ассистента тот же, что в Reply.Text/Reasoning.
 	textStarted, reasonStarted := false, false
+	appendPart := func(part Part) {
+		reply.Parts = append(reply.Parts, part)
+		if part.Reasoning != "" && in.OnReasoning != nil {
+			prefix := ""
+			if reasonStarted {
+				prefix = "\n\n"
+			}
+			in.OnReasoning(prefix + part.Reasoning)
+			reasonStarted = true
+		}
+		if part.Text != "" && in.OnText != nil {
+			prefix := ""
+			if textStarted {
+				prefix = "\n\n"
+			}
+			in.OnText(prefix + part.Text)
+			textStarted = true
+		}
+	}
 	accepted := false
-	for len(queue) > 0 {
-		g := queue[0]
-		queue = queue[1:]
+	start := func() {
+		if !accepted {
+			accepted = true
+			if in.OnStarted != nil {
+				in.OnStarted()
+			}
+		}
+	}
+	var replay []naparnik.Packet
+	if recovered != nil && len(recovered.tail) == 0 {
+		replay = recovered.packets
+		start()
+		for _, part := range recovered.prefix {
+			appendPart(part)
+		}
+	}
+	for len(queue) > 0 || len(replay) > 0 {
+		var g Turn
+		if len(replay) == 0 {
+			g = queue[0]
+			queue = queue[1:]
+		}
 
 		var serverResults []naparnik.ToolResult
-		uuid, err := e.send(ctx, in.Key, conversation, parent, g, wireTools, false, func(p naparnik.Packet) {
-			if !accepted {
-				accepted = true
-				if in.OnStarted != nil {
-					in.OnStarted()
-				}
+		var acks []string
+		partStart := len(reply.Parts)
+		handle := func(p naparnik.Packet) {
+			start()
+			if p.Role == g.Role && p.Finished && p.UUID != "" && !slices.Contains(acks, p.UUID) {
+				acks = append(acks, p.UUID)
 			}
 			if p.UUID != "" {
 				lastUUID = p.UUID
@@ -432,32 +493,34 @@ func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string,
 					Content:    nil,
 				})
 			}
-			reply.Parts = append(reply.Parts, part)
-
 			// Подтверждённое сообщение отдаём сразу: в режиме deltas клиент получает
 			// ответ по мере готовности, но никогда — черновик.
-			if part.Reasoning != "" && in.OnReasoning != nil {
-				if reasonStarted {
-					in.OnReasoning("\n\n" + part.Reasoning)
-				} else {
-					in.OnReasoning(part.Reasoning)
-					reasonStarted = true
-				}
+			appendPart(part)
+		}
+		var uuid string
+		var sendErr error
+		if len(replay) > 0 {
+			for _, p := range replay {
+				handle(p)
 			}
-			if part.Text != "" && in.OnText != nil {
-				if textStarted {
-					in.OnText("\n\n" + part.Text)
-				} else {
-					in.OnText(part.Text)
-					textStarted = true
+			uuid = replay[len(replay)-1].UUID
+			replay = nil
+		} else {
+			uuid, sendErr = e.send(ctx, in.Key, conversation, parent, g, wireTools, false, handle)
+		}
+		if sendErr != nil {
+			if len(acks) > 0 && interruptedStream(sendErr) {
+				cut := interruptedTurn{Request: turnDigest(in.Turns), Count: len(in.Turns), Role: g.Role,
+					Acks: acks, Prefix: reply.Parts[:partStart], Remaining: len(queue)}
+				for _, result := range g.Results {
+					cut.ToolIDs = append(cut.ToolIDs, result.ToolCallID)
 				}
+				e.rememberInterrupted(ctx, in, sessionKey, conversation, parent, fingerprint, toolMap, cut)
 			}
-		})
-		if err != nil {
 			if len(reply.Parts) > 0 {
-				return reply, err
+				return reply, sendErr
 			}
-			return nil, err
+			return nil, sendErr
 		}
 		if uuid != "" {
 			p := uuid
@@ -499,6 +562,7 @@ func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string,
 	binding.Conversation = conversation
 	binding.Parent = lastUUID
 	binding.Fingerprint = fingerprint
+	binding.PendingJSON = ""
 	log := e.Log
 	if log == nil {
 		log = slog.Default()
@@ -702,6 +766,12 @@ func flattenToolTurns(turns []Turn) []Turn {
 // Один и тот же отпечаток получается и из нашего Reply, и из реплики, которую
 // клиент прислал обратно, — поэтому по нему находится контрольная точка.
 func answerDigest(text string, calls []naparnik.ToolCall) string {
+	ordered := slices.Clone(calls)
+	slices.SortFunc(ordered, func(a, b naparnik.ToolCall) int { return strings.Compare(a.ID, b.ID) })
+	return orderedAnswerDigest(text, ordered)
+}
+
+func orderedAnswerDigest(text string, calls []naparnik.ToolCall) string {
 	h := sha256.New()
 	_, _ = h.Write([]byte(strings.TrimSpace(text)))
 	for _, c := range calls {

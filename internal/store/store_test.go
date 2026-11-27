@@ -344,3 +344,43 @@ func TestPurgeSessionsRemovesOnlyStaleCheckpoints(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenMigratesExistingSessionForRecovery(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	original, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	keyID, err := original.CreateKey(ctx, "test", "test", []byte{1})
+	if err != nil {
+		original.Close()
+		t.Fatal(err)
+	}
+	tokenID, err := original.CreateToken(ctx, Token{KeyID: keyID, Name: "test"}, "hash", "")
+	if err != nil {
+		original.Close()
+		t.Fatal(err)
+	}
+	session := Session{TokenID: tokenID, Protocol: "openai", SessionID: "old", Conversation: "dialog", Parent: "old-parent"}
+	if err := original.SaveSession(ctx, session); err != nil {
+		original.Close()
+		t.Fatal(err)
+	}
+	if _, err := original.db.Exec(`ALTER TABLE sessions DROP COLUMN pending_json`); err != nil {
+		original.Close()
+		t.Fatal(err)
+	}
+	if err := original.Close(); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	existing, err := upgraded.GetSession(ctx, tokenID, "openai", "old")
+	if err != nil || existing.Parent != session.Parent || existing.PendingJSON != "" {
+		t.Fatalf("unexpected migration result: %+v, %v", existing, err)
+	}
+}
