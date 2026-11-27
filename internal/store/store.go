@@ -801,6 +801,7 @@ type LogFilter struct {
 	Protocol string
 	Status   int
 	Since    time.Time
+	Until    time.Time
 	Limit    int
 	Offset   int
 	// All отключает постраничный лимит — нужно для выгрузки журнала в файл.
@@ -830,6 +831,10 @@ func (s *Store) QueryLog(ctx context.Context, f LogFilter) ([]LogEntry, int, err
 	if !f.Since.IsZero() {
 		where += " AND ts>=?"
 		args = append(args, f.Since.Unix())
+	}
+	if !f.Until.IsZero() {
+		where += " AND ts<=?"
+		args = append(args, f.Until.Unix())
 	}
 	var total int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM request_log `+where, args...).Scan(&total); err != nil {

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -662,20 +663,13 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	f := store.LogFilter{
-		Protocol: q.Get("protocol"),
-		Limit:    atoiDefault(q.Get("limit"), 50),
-		Offset:   atoiDefault(q.Get("offset"), 0),
+	f, err := parseLogFilter(q)
+	if err != nil {
+		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
 	}
-	f.KeyID, _ = strconv.ParseInt(q.Get("key_id"), 10, 64)
-	f.TokenID, _ = strconv.ParseInt(q.Get("token_id"), 10, 64)
-	f.Status, _ = strconv.Atoi(q.Get("status"))
-	if v := q.Get("hours"); v != "" {
-		hours := atoiDefault(v, 0)
-		if hours > 0 {
-			f.Since = time.Now().Add(-time.Duration(hours) * time.Hour)
-		}
-	}
+	f.Limit = atoiDefault(q.Get("limit"), 50)
+	f.Offset = atoiDefault(q.Get("offset"), 0)
 	entries, total, err := s.Store.QueryLog(r.Context(), f)
 	if err != nil {
 		s.fail(w, err)
@@ -685,6 +679,71 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 		entries = []store.LogEntry{}
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"entries": entries, "total": total})
+}
+
+// parseLogFilter разбирает общие условия отбора журнала: протокол, ключ, токен,
+// статус, окно «от/до». Один разбор на список и выгрузку — иначе фильтры в них
+// разъезжаются.
+func parseLogFilter(q url.Values) (store.LogFilter, error) {
+	f := store.LogFilter{Protocol: q.Get("protocol")}
+	f.KeyID, _ = strconv.ParseInt(q.Get("key_id"), 10, 64)
+	f.TokenID, _ = strconv.ParseInt(q.Get("token_id"), 10, 64)
+	f.Status, _ = strconv.Atoi(q.Get("status"))
+	if v := q.Get("hours"); v != "" {
+		if hours := atoiDefault(v, 0); hours > 0 {
+			f.Since = time.Now().Add(-time.Duration(hours) * time.Hour)
+		}
+	}
+	if v := strings.TrimSpace(q.Get("from")); v != "" {
+		t, err := parseLogTime(v, false)
+		if err != nil {
+			return f, fmt.Errorf("Неверная дата «от»: %s", v)
+		}
+		f.Since = t
+	}
+	if v := strings.TrimSpace(q.Get("to")); v != "" {
+		t, err := parseLogTime(v, true)
+		if err != nil {
+			return f, fmt.Errorf("Неверная дата «до»: %s", v)
+		}
+		f.Until = t
+	}
+	if !f.Since.IsZero() && !f.Until.IsZero() && f.Until.Before(f.Since) {
+		return f, errors.New("Дата «до» раньше даты «от»")
+	}
+	return f, nil
+}
+
+// parseLogTime разбирает дату из фильтра. Принимает значение поля datetime-local
+// (2026-11-27T14:30), дату без времени и RFC3339. Верхняя граница включает
+// указанную минуту целиком: «до 14:30» означает «по 14:30:59».
+func parseLogTime(raw string, upper bool) (time.Time, error) {
+	layouts := []string{
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04",
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02",
+		time.RFC3339,
+	}
+	for _, layout := range layouts {
+		t, err := time.ParseInLocation(layout, raw, time.Local)
+		if err != nil {
+			continue
+		}
+		if !upper {
+			return t, nil
+		}
+		switch {
+		case layout == "2006-01-02":
+			// Дата без времени — весь день целиком.
+			return t.AddDate(0, 0, 1).Add(-time.Second), nil
+		case !strings.Contains(layout, "05"):
+			return t.Add(time.Minute - time.Second), nil
+		}
+		return t, nil
+	}
+	return time.Time{}, errors.New("неподдерживаемый формат даты")
 }
 
 // purgeLogs удаляет старые записи журнала запросов. days=0 — удалить всё.
@@ -716,15 +775,12 @@ func (s *Server) purgeLogs(w http.ResponseWriter, r *http.Request) {
 // exportLogs отдаёт журнал файлом CSV (разделитель «;», UTF-8 с BOM — открывается в Excel).
 func (s *Server) exportLogs(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	f := store.LogFilter{Protocol: q.Get("protocol"), All: true}
-	f.KeyID, _ = strconv.ParseInt(q.Get("key_id"), 10, 64)
-	f.TokenID, _ = strconv.ParseInt(q.Get("token_id"), 10, 64)
-	f.Status, _ = strconv.Atoi(q.Get("status"))
-	if v := q.Get("hours"); v != "" {
-		if hours := atoiDefault(v, 0); hours > 0 {
-			f.Since = time.Now().Add(-time.Duration(hours) * time.Hour)
-		}
+	f, err := parseLogFilter(q)
+	if err != nil {
+		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
 	}
+	f.All = true
 	entries, _, err := s.Store.QueryLog(r.Context(), f)
 	if err != nil {
 		s.fail(w, err)

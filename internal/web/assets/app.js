@@ -17,6 +17,9 @@ const state = {
   usageRange: '24h',
   logOffset: 0,
   logTotal: 0,
+  // logFilter — активный отбор журнала: токен и период. Пустые значения означают
+  // «без ограничения», поэтому храним их же, а не null.
+  logFilter: { tokenId: '', from: '', to: '' },
 };
 
 const app = document.getElementById('app');
@@ -1176,11 +1179,54 @@ async function resetSession(tokenID, protocol, sessionID) {
 
 const LOG_PAGE_SIZE = 50;
 
+// logQuery собирает параметры запроса журнала: активный отбор плюс то, что
+// передали явно. Один построитель на список и выгрузку — иначе фильтры в них
+// разъезжаются и CSV приходит не за тот период, что видно на экране.
+function logQuery(extra) {
+  const p = new URLSearchParams();
+  const f = state.logFilter || {};
+  if (f.tokenId) p.set('token_id', f.tokenId);
+  if (f.from) p.set('from', f.from);
+  if (f.to) p.set('to', f.to);
+  if (extra) Object.entries(extra).forEach(([k, v]) => p.set(k, String(v)));
+  return p.toString();
+}
+
+// applyLogFilter переносит выбранный отбор в состояние и перечитывает журнал
+// с первой страницы: после сужения выборки текущая страница «уезжает» за конец.
+function applyLogFilter() {
+  const fromEl = document.getElementById('log-from');
+  const toEl = document.getElementById('log-to');
+  const from = fromEl ? fromEl.value : '';
+  const to = toEl ? toEl.value : '';
+  const tokenId = ddValue('log-token') || '';
+  if (from && to && new Date(to) < new Date(from)) {
+    toast('Дата «по» раньше даты «с»', true);
+    return;
+  }
+  state.logFilter = { tokenId, from, to };
+  state.logOffset = 0;
+  go('logs');
+}
+
+function resetLogFilter() {
+  state.logFilter = { tokenId: '', from: '', to: '' };
+  state.logOffset = 0;
+  go('logs');
+}
+
+// logFilterActive сообщает, задано ли хоть одно условие отбора — по нему
+// показываем пояснение под панелью фильтров.
+function logFilterActive() {
+  const f = state.logFilter || {};
+  return !!(f.tokenId || f.from || f.to);
+}
+
 async function renderLogs(main) {
   const [keys, tokens] = await Promise.all([api('/api/keys'), api('/api/tokens')]);
   const size = LOG_PAGE_SIZE;
   if (state.logOffset < 0) state.logOffset = 0;
-  const res = await api(`/api/logs?limit=${size}&offset=${state.logOffset}`);
+  const res = await api('/api/logs?' + logQuery({ limit: size, offset: state.logOffset }));
   state.logTotal = res.total;
   // После очистки текущая страница могла оказаться за пределами журнала.
   if (res.total > 0 && state.logOffset >= res.total) {
@@ -1222,7 +1268,30 @@ async function renderLogs(main) {
 
     <section class="card settings-section">
       <div class="card-head">
-        <h2>Записи ${infoBtn('Страница показывает 50 записей. Нажмите на строку, чтобы посмотреть подробности. Выгрузка в CSV отдаёт весь журнал.', 'Про список записей')}</h2>
+        <h2>Отбор ${infoBtn('Фильтры действуют и на список, и на выгрузку в CSV. Период «по» включает указанную минуту целиком.', 'Про отбор')}</h2>
+        <span class="spacer"></span>
+        <button class="btn ghost small" type="button" onclick="resetLogFilter()">Сбросить</button>
+        <button class="btn small" type="button" onclick="applyLogFilter()">Применить</button>
+      </div>
+      <div class="row log-filter">
+        <label class="inline-label">Токен
+          ${ddHTML('log-token', [{ value: '', label: 'Все токены' }].concat(
+            tokens.map((t) => ({ value: String(t.id), label: t.name || ('#' + t.id) }))
+          ), state.logFilter.tokenId, 'min-width:220px')}
+        </label>
+        <label class="inline-label">с
+          <input id="log-from" type="datetime-local" value="${esc(state.logFilter.from)}" style="margin-top:0">
+        </label>
+        <label class="inline-label">по
+          <input id="log-to" type="datetime-local" value="${esc(state.logFilter.to)}" style="margin-top:0">
+        </label>
+      </div>
+      ${logFilterActive() ? '<p class="muted small" style="margin:10px 0 0">Показаны записи по отбору. «Всего записей» ниже — с учётом отбора.</p>' : ''}
+    </section>
+
+    <section class="card settings-section">
+      <div class="card-head">
+        <h2>Записи ${infoBtn('Страница показывает 50 записей. Нажмите на строку, чтобы посмотреть подробности. Выгрузка в CSV отдаёт весь журнал с учётом отбора.', 'Про список записей')}</h2>
         <span class="muted small">Всего записей: ${fmtNum(res.total)}</span>
         <span class="spacer"></span>
         ${res.total ? `<span class="muted small">${fmtNum(from)}–${fmtNum(to)} из ${fmtNum(res.total)}</span>` : ''}
@@ -1267,8 +1336,10 @@ function logsPage(delta) {
 }
 
 // exportLogs скачивает журнал файлом CSV: сервер отдаёт его вложением.
+// Отбор передаётся тот же, что действует на экране.
 function exportLogs() {
-  window.location.href = '/api/logs/export';
+  const q = logQuery();
+  window.location.href = '/api/logs/export' + (q ? '?' + q : '');
 }
 
 // purgeLogs удаляет записи журнала старше введённого числа дней (0 — все).
