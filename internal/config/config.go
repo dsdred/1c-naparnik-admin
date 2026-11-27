@@ -2,7 +2,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -248,4 +250,61 @@ func IsLoopback(addr string) bool {
 	}
 	host = strings.Trim(host, "[]")
 	return host == "127.0.0.1" || host == "localhost" || host == "::1"
+}
+
+// ValidateListeners проверяет структуру набора слушателей: адреса, типы, дубли
+// включённых адресов и то, что после применения останется доступ к админке.
+// Наличие файлов сертификатов проверяет вызывающий: при переносе на другую
+// машину пути могут быть ещё не созданы.
+func ValidateListeners(list []Listener) error {
+	enabled, enabledAdmin := 0, 0
+	seen := map[string]bool{}
+	for _, l := range list {
+		if _, _, err := net.SplitHostPort(l.Addr); err != nil {
+			return fmt.Errorf("Неверный адрес: %s", l.Addr)
+		}
+		if l.Kind != KindGateway && l.Kind != KindAdmin {
+			return fmt.Errorf("Неизвестный тип слушателя: %s", l.Kind)
+		}
+		if l.Disabled {
+			// Выключенная запись порт не занимает, поэтому дубль адреса с ней допустим.
+			continue
+		}
+		if seen[l.Addr] {
+			return fmt.Errorf("Адрес %s уже занят другим включённым слушателем", l.Addr)
+		}
+		seen[l.Addr] = true
+		enabled++
+		if l.Kind == KindAdmin {
+			enabledAdmin++
+		}
+	}
+	if enabled == 0 {
+		return errors.New("Нужен хотя бы один включённый слушатель")
+	}
+	if enabledAdmin == 0 {
+		return errors.New("Нельзя выключить последнюю админку — потеряете доступ к настройкам")
+	}
+	return nil
+}
+
+// NormalizeModelID проверяет публичный id модели: без пробелов и служебных
+// символов, чтобы его можно было безопасно подставить в сниппеты подключения
+// и JSON.
+func NormalizeModelID(raw string) (string, error) {
+	id := strings.TrimSpace(raw)
+	if id == "" {
+		return "", errors.New("ID модели не может быть пустым")
+	}
+	if len([]rune(id)) > 64 {
+		return "", errors.New("ID модели длиннее 64 символов")
+	}
+	for _, r := range id {
+		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
+			r == '-' || r == '_' || r == '.' || r == ':' || r == '/'
+		if !ok {
+			return "", errors.New("ID модели может содержать только латиницу, цифры и символы - _ . : /")
+		}
+	}
+	return id, nil
 }

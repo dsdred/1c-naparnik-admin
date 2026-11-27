@@ -49,6 +49,10 @@ func main() {
 		err = runToken(*configPath, log, args[1:])
 	case "doctor":
 		err = runDoctor(*configPath, log)
+	case "export":
+		err = runExport(*configPath, log, args[1:])
+	case "import":
+		err = runImport(*configPath, log, args[1:])
 	case "service":
 		err = runServiceCmd(*configPath, log, args[1:])
 	case "version":
@@ -75,6 +79,10 @@ func usage() {
   naparnik-admin [-config config.yaml] token create -key-id 1 -name "Cline"
   naparnik-admin [-config config.yaml] token list
   naparnik-admin [-config config.yaml] doctor           проверить конфигурацию и базу
+  naparnik-admin [-config config.yaml] export -out FILE -password P
+                                                        выгрузить ключи, токены, слушатели и настройки
+  naparnik-admin [-config config.yaml] import -in FILE -password P
+                                                        перенести настройки из файла (заменяет всё)
   naparnik-admin [-config config.yaml] service install  установить службу Windows
   naparnik-admin service start|stop|status|remove        управление службой
   naparnik-admin version                                показать версию сборки

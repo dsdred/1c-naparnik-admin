@@ -75,6 +75,9 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/connect", s.connect)
 
+	mux.HandleFunc("POST /api/transfer/export", s.transferExport)
+	mux.HandleFunc("POST /api/transfer/import", s.transferImport)
+
 	return s.middleware(mux)
 }
 
@@ -833,39 +836,20 @@ func (s *Server) getListeners(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, s.Cfg.Snapshot().Listeners)
 }
 
-// validateListeners проверяет набор слушателей из админки: адреса, типы, дубли
-// и то, что после применения останется доступ к самой админке.
+// validateListeners проверяет набор слушателей из админки. Структурная часть
+// общая с переносом настроек (config.ValidateListeners), здесь добавляется
+// проверка файлов сертификатов: в админке они должны существовать сразу.
 func validateListeners(list []config.Listener) error {
-	enabled, enabledAdmin := 0, 0
-	seen := map[string]bool{}
+	if err := config.ValidateListeners(list); err != nil {
+		return err
+	}
 	for _, l := range list {
-		if _, _, err := net.SplitHostPort(l.Addr); err != nil {
-			return fmt.Errorf("Неверный адрес: %s", l.Addr)
-		}
-		if l.Kind != config.KindGateway && l.Kind != config.KindAdmin {
-			return fmt.Errorf("Неизвестный тип слушателя: %s", l.Kind)
-		}
 		if l.Disabled {
-			// Выключенная запись порт не занимает, поэтому дубль адреса с ней допустим.
 			continue
 		}
 		if err := validateTLSFiles(l); err != nil {
 			return err
 		}
-		if seen[l.Addr] {
-			return fmt.Errorf("Адрес %s уже занят другим включённым слушателем", l.Addr)
-		}
-		seen[l.Addr] = true
-		enabled++
-		if l.Kind == config.KindAdmin {
-			enabledAdmin++
-		}
-	}
-	if enabled == 0 {
-		return errors.New("Нужен хотя бы один включённый слушатель")
-	}
-	if enabledAdmin == 0 {
-		return errors.New("Нельзя выключить последнюю админку — потеряете доступ к настройкам")
 	}
 	return nil
 }
@@ -941,21 +925,7 @@ type settingsView struct {
 // normalizeModelID проверяет публичный id модели: без пробелов и служебных символов,
 // чтобы его можно было безопасно подставить в сниппеты подключения и JSON.
 func normalizeModelID(raw string) (string, error) {
-	id := strings.TrimSpace(raw)
-	if id == "" {
-		return "", errors.New("ID модели не может быть пустым")
-	}
-	if len([]rune(id)) > 64 {
-		return "", errors.New("ID модели длиннее 64 символов")
-	}
-	for _, r := range id {
-		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
-			r == '-' || r == '_' || r == '.' || r == ':' || r == '/'
-		if !ok {
-			return "", errors.New("ID модели может содержать только латиницу, цифры и символы - _ . : /")
-		}
-	}
-	return id, nil
+	return config.NormalizeModelID(raw)
 }
 
 // parseDurationSetting разбирает длительность из настроек: «30s», «5m», «2h».

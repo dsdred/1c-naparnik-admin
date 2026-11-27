@@ -1711,6 +1711,15 @@ async function renderSettings(main) {
       </div>
     </section>
 
+    <section class="card settings-section">
+      <h2>Перенос настроек ${infoBtn('Файл содержит ключи Напарника, значения токенов, слушателей и настройки — и всегда шифруется паролем. При загрузке текущие ключи и токены заменяются целиком: клиентам не нужно менять токены, они переносятся вместе со значениями.', 'Про перенос')}</h2>
+      <p class="muted small" style="margin:0 0 12px">Для переезда на другую машину: выгрузите файл здесь, затем на новом экземпляре загрузите его с тем же паролем.</p>
+      <div class="row">
+        <button class="btn ghost" onclick="transferExportDialog()">Выгрузить в файл</button>
+        <button class="btn ghost" onclick="transferImportDialog()">Загрузить из файла</button>
+      </div>
+    </section>
+
     <div class="row"><button class="btn" onclick="saveSettings()">Сохранить</button></div>`;
 }
 
@@ -1747,6 +1756,146 @@ async function saveSettings() {
     await api('/api/settings', { method: 'PUT', body });
     toast('Сохранено');
   } catch (e) { toast(e.message, true); }
+}
+
+/* ---------- перенос настроек ---------- */
+
+// downloadBase64 отдаёт файл из base64-строки: сервер присылает содержимое
+// файла переноса в JSON, а браузер сохраняет его как обычную загрузку.
+function downloadBase64(name, b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const blob = new Blob([bytes], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// transferExportDialog спрашивает пароль и выгружает файл переноса.
+// Пароль обязателен: внутри ключи Напарника и значения токенов.
+function transferExportDialog() {
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-backdrop';
+  wrap.innerHTML = `
+    <div class="modal" style="max-width:520px">
+      <h2 style="margin-top:0">Выгрузить настройки</h2>
+      <p class="muted" style="margin:0 0 14px">В файл попадут ключи Напарника, значения токенов, слушатели и настройки. Он шифруется паролем — без него файл не открыть.</p>
+      <label>Пароль (не короче 8 символов)</label>
+      <input id="tr-pass" type="password" autocomplete="new-password" style="width:100%">
+      <label>Повторите пароль</label>
+      <input id="tr-pass2" type="password" autocomplete="new-password" style="width:100%">
+      <p class="field-error" id="tr-err" hidden></p>
+      <div class="row" style="justify-content:flex-end;margin-top:16px">
+        <button class="btn ghost" data-act="cancel">Отмена</button>
+        <button class="btn" data-act="ok">Выгрузить</button>
+      </div>
+    </div>`;
+  const close = () => wrap.remove();
+  wrap.addEventListener('click', async (e) => {
+    if (e.target === wrap) return close();
+    const act = e.target.closest('[data-act]');
+    if (!act) return;
+    if (act.dataset.act === 'cancel') return close();
+    const pass = wrap.querySelector('#tr-pass').value;
+    const pass2 = wrap.querySelector('#tr-pass2').value;
+    const err = wrap.querySelector('#tr-err');
+    if (pass.length < 8) {
+      err.textContent = 'Пароль короче 8 символов';
+      err.hidden = false;
+      return;
+    }
+    if (pass !== pass2) {
+      err.textContent = 'Пароли не совпадают';
+      err.hidden = false;
+      return;
+    }
+    act.disabled = true;
+    try {
+      const r = await api('/api/transfer/export', { method: 'POST', body: { password: pass } });
+      downloadBase64(r.filename, r.data);
+      close();
+      toast(`Выгружено: ключей ${r.keys}, токенов ${r.tokens}`);
+    } catch (e2) {
+      err.textContent = e2.message;
+      err.hidden = false;
+      act.disabled = false;
+    }
+  });
+  document.body.appendChild(wrap);
+  wrap.querySelector('#tr-pass').focus();
+}
+
+// transferImportDialog загружает файл переноса. Замена полная, поэтому
+// сначала подтверждение, потом отправка.
+function transferImportDialog() {
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-backdrop';
+  wrap.innerHTML = `
+    <div class="modal" style="max-width:560px">
+      <h2 style="margin-top:0">Загрузить настройки</h2>
+      <p class="muted" style="margin:0 0 14px">Текущие ключи и токены будут <b>заменены</b> содержимым файла. Старые токены перестанут действовать, если их нет в файле.</p>
+      <label>Файл переноса</label>
+      <input id="tr-file" type="file" accept=".json,application/json" style="width:100%">
+      <label>Пароль файла</label>
+      <input id="tr-pass" type="password" autocomplete="current-password" style="width:100%">
+      <p class="field-error" id="tr-err" hidden></p>
+      <div class="row" style="justify-content:flex-end;margin-top:16px">
+        <button class="btn ghost" data-act="cancel">Отмена</button>
+        <button class="btn danger" data-act="ok">Заменить</button>
+      </div>
+    </div>`;
+  const close = () => wrap.remove();
+  wrap.addEventListener('click', async (e) => {
+    if (e.target === wrap) return close();
+    const act = e.target.closest('[data-act]');
+    if (!act) return;
+    if (act.dataset.act === 'cancel') return close();
+    const fileEl = wrap.querySelector('#tr-file');
+    const pass = wrap.querySelector('#tr-pass').value;
+    const err = wrap.querySelector('#tr-err');
+    const file = fileEl.files && fileEl.files[0];
+    if (!file) {
+      err.textContent = 'Выберите файл переноса';
+      err.hidden = false;
+      return;
+    }
+    act.disabled = true;
+    try {
+      const data = await fileToBase64(file);
+      const r = await api('/api/transfer/import', { method: 'POST', body: { password: pass, data } });
+      close();
+      const warn = r.skipped ? `, пропущено токенов: ${r.skipped}` : '';
+      toast(`Перенесено: ключей ${r.keys}, токенов ${r.tokens}${warn}`);
+      if (r.warning) toast(r.warning, true);
+      go('settings');
+    } catch (e2) {
+      err.textContent = e2.message;
+      err.hidden = false;
+      act.disabled = false;
+    }
+  });
+  document.body.appendChild(wrap);
+  wrap.querySelector('#tr-file').focus();
+}
+
+// fileToBase64 читает файл и отдаёт только base64 без префикса data:.
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const s = String(reader.result || '');
+      const i = s.indexOf(',');
+      resolve(i >= 0 ? s.slice(i + 1) : s);
+    };
+    reader.onerror = () => reject(new Error('не удалось прочитать файл'));
+    reader.readAsDataURL(file);
+  });
 }
 
 /* ---------- подключение ---------- */
