@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 
 	"naparnikadmin/internal/secrets"
@@ -53,7 +54,7 @@ func FromGemini(r *http.Request) string {
 }
 
 // Resolve проверяет токен и возвращает принципала.
-func (a *Auth) Resolve(ctx context.Context, plain string) (*Principal, error) {
+func (a *Auth) Resolve(ctx context.Context, plain string, protocols ...string) (*Principal, error) {
 	plain = strings.TrimSpace(plain)
 	if plain == "" {
 		return nil, NewError(http.StatusUnauthorized, "no_token", "Не передан токен доступа. Укажите его как API-ключ.")
@@ -64,6 +65,9 @@ func (a *Auth) Resolve(ctx context.Context, plain string) (*Principal, error) {
 	}
 	if !tok.Enabled || tok.RevokedAt != nil {
 		return nil, NewError(http.StatusUnauthorized, "invalid_token", "Токен отозван.")
+	}
+	if tok.Provider != "" && !slices.Contains(protocols, tok.Provider) {
+		return nil, NewError(http.StatusForbidden, "protocol_not_allowed", "Токен ограничен другим протоколом.")
 	}
 	enc, err := a.Store.KeySecret(ctx, tok.KeyID)
 	if err != nil {

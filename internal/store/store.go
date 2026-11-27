@@ -500,11 +500,21 @@ func (s *Store) SaveSession(ctx context.Context, ss Session) error {
 	return err
 }
 
-// DeleteSession удаляет привязку (сброс диалога).
+// DeleteSession удаляет привязку и контрольные точки одной транзакцией.
 func (s *Store) DeleteSession(ctx context.Context, tokenID int64, protocol, sessionID string) error {
-	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM sessions WHERE token_id=? AND protocol=? AND session_id=?`, tokenID, protocol, sessionID)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := deleteCheckpoints(ctx, tx, tokenID, protocol, sessionID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE token_id=? AND protocol=? AND session_id=?`,
+		tokenID, protocol, sessionID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ---------- контрольные точки истории ----------
@@ -581,7 +591,15 @@ func (s *Store) CountCheckpoints(ctx context.Context, tokenID int64, protocol, s
 // DeleteCheckpoints забывает все точки сессии: сброс диалога и восстановление
 // после ответа «диалог не найден».
 func (s *Store) DeleteCheckpoints(ctx context.Context, tokenID int64, protocol, sessionID string) error {
-	_, err := s.db.ExecContext(ctx,
+	return deleteCheckpoints(ctx, s.db, tokenID, protocol, sessionID)
+}
+
+type contextExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func deleteCheckpoints(ctx context.Context, db contextExecer, tokenID int64, protocol, sessionID string) error {
+	_, err := db.ExecContext(ctx,
 		`DELETE FROM session_checkpoints WHERE token_id=? AND protocol=? AND session_id=?`,
 		tokenID, protocol, sessionID)
 	return err
@@ -616,8 +634,20 @@ func (s *Store) ListSessions(ctx context.Context, limit int) ([]Session, error) 
 
 // PurgeSessions удаляет привязки старше указанного момента.
 func (s *Store) PurgeSessions(ctx context.Context, olderThan time.Time) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE updated_at < ?`, olderThan.Unix())
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM session_checkpoints AS cp
+		WHERE NOT EXISTS (SELECT 1 FROM sessions AS s WHERE s.token_id=cp.token_id
+		AND s.protocol=cp.protocol AND s.session_id=cp.session_id AND s.updated_at>=?)`, olderThan.Unix()); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE updated_at < ?`, olderThan.Unix()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ---------- бюджет ----------
