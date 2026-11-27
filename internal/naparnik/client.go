@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"naparnikadmin/internal/sse"
@@ -17,22 +18,42 @@ import (
 // sseRead — обёртка над разбором SSE, чтобы не тянуть зависимость в вызывающий код.
 // Client — клиент Напарника. Один экземпляр на процесс, ключ передаётся в каждый вызов.
 type Client struct {
-	base string
-	hc   *http.Client
+	base           string
+	requestTimeout func() time.Duration
+	mu             sync.Mutex
+	transport      *http.Transport
 }
 
 // New создаёт клиент. base — например https://code.1c.ai/public/v1
 func New(base string, requestTimeout time.Duration) *Client {
-	transport := &http.Transport{
+	return NewWithTimeout(base, func() time.Duration { return requestTimeout })
+}
+
+// NewWithTimeout selects a response-header timeout for each new request.
+func NewWithTimeout(base string, timeout func() time.Duration) *Client {
+	return &Client{base: strings.TrimRight(base, "/"), requestTimeout: timeout}
+}
+
+func (c *Client) currentTransport() *http.Transport {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	timeout := c.requestTimeout()
+	if c.transport != nil {
+		if c.transport.ResponseHeaderTimeout == timeout {
+			return c.transport
+		}
+		c.transport.CloseIdleConnections()
+	}
+	c.transport = &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		MaxIdleConns:          64,
 		MaxIdleConnsPerHost:   16,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   15 * time.Second,
-		ResponseHeaderTimeout: requestTimeout,
+		ResponseHeaderTimeout: timeout,
 		ForceAttemptHTTP2:     true,
 	}
-	return &Client{base: strings.TrimRight(base, "/"), hc: &http.Client{Transport: transport}}
+	return c.transport
 }
 
 // Fault — ошибка Напарника в терминах HTTP-статуса и машинного кода.
@@ -204,7 +225,8 @@ func (c *Client) request(ctx context.Context, key, method, path string, body any
 	}
 	req.Header.Set("Accept", accept)
 	req.Header.Set("User-Agent", "naparnik-admin/0.1")
-	return c.hc.Do(req)
+	client := http.Client{Transport: c.currentTransport()}
+	return client.Do(req)
 }
 
 // faultFromBody разбирает тело ошибки Напарника.
