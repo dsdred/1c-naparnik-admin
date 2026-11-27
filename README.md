@@ -74,7 +74,7 @@ listeners:
 
 Живые проверки шли через `http://aids:47833/v1` (сетевой адрес стенда): `/v1/models`, стрим, многоходовый диалог, вызов клиентского инструмента и продолжение после его результата, rewind истории.
 
-**Ещё не проверено** (инструкции рабочие, но подключение в этих клиентах не подтверждалось): Roo Code / Kilo Code, Continue (VS Code, JetBrains), JetBrains AI Assistant, Claude Code, Codex CLI, Gemini CLI.
+**Ещё не проверено** (инструкции рабочие, но подключение в этих клиентах не подтверждалось): Roo Code / Kilo Code, Continue (VS Code, JetBrains), JetBrains AI Assistant, Codex CLI, Gemini CLI.
 
 Точные настройки для каждого клиента собирает мастер в разделе «Подключение» админки — там же актуальные адрес шлюза и значение токена. Ниже — те же варианты текстом.
 
@@ -86,13 +86,25 @@ API Key:  nr_...            (токен из админки)
 Model:    naparnik          (id модели из настроек админки)
 ```
 
-**Claude Code**:
+**Claude Code**. Убедитесь, что команда `claude --version` доступна. Укажите адрес слушателя шлюза без суффикса `/v1`, токен из админки и ID модели. Переменные действуют в текущем терминале.
+
+**Windows PowerShell**
+
+```powershell
+$env:ANTHROPIC_BASE_URL = 'http://127.0.0.1:47831'
+$env:ANTHROPIC_AUTH_TOKEN = '<токен из админки>'
+claude --model naparnik
+```
+
+**Bash или Zsh**
 
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:47831
-export ANTHROPIC_API_KEY=nr_...
-claude
+export ANTHROPIC_AUTH_TOKEN='<токен из админки>'
+claude --model naparnik
 ```
+
+Потоковый текстовый ответ проверен в Claude Code 2.1.332 через Windows x64 `1.2.1-rc.2` (`790f1bc`) с реальным API 1С:Напарника.
 
 **Gemini CLI**:
 
