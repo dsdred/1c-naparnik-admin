@@ -8,33 +8,53 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"naparnikadmin/internal/sse"
 )
 
 // sseRead — обёртка над разбором SSE, чтобы не тянуть зависимость в вызывающий код.
-func sseRead(ctx context.Context, r io.Reader) <-chan sse.Event { return sse.Read(ctx, r) }
-
 // Client — клиент Напарника. Один экземпляр на процесс, ключ передаётся в каждый вызов.
 type Client struct {
-	base string
-	hc   *http.Client
+	base           string
+	requestTimeout func() time.Duration
+	mu             sync.Mutex
+	transport      *http.Transport
 }
 
 // New создаёт клиент. base — например https://code.1c.ai/public/v1
 func New(base string, requestTimeout time.Duration) *Client {
-	transport := &http.Transport{
+	return NewWithTimeout(base, func() time.Duration { return requestTimeout })
+}
+
+// NewWithTimeout selects a response-header timeout for each new request.
+func NewWithTimeout(base string, timeout func() time.Duration) *Client {
+	return &Client{base: strings.TrimRight(base, "/"), requestTimeout: timeout}
+}
+
+func (c *Client) currentTransport() *http.Transport {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	timeout := c.requestTimeout()
+	if c.transport != nil {
+		if c.transport.ResponseHeaderTimeout == timeout {
+			return c.transport
+		}
+		c.transport.CloseIdleConnections()
+	}
+	c.transport = &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		MaxIdleConns:          64,
 		MaxIdleConnsPerHost:   16,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   15 * time.Second,
-		ResponseHeaderTimeout: requestTimeout,
+		ResponseHeaderTimeout: timeout,
 		ForceAttemptHTTP2:     true,
 	}
-	return &Client{base: strings.TrimRight(base, "/"), hc: &http.Client{Transport: transport}}
+	return c.transport
 }
 
 // Fault — ошибка Напарника в терминах HTTP-статуса и машинного кода.
@@ -206,7 +226,8 @@ func (c *Client) request(ctx context.Context, key, method, path string, body any
 	}
 	req.Header.Set("Accept", accept)
 	req.Header.Set("User-Agent", "naparnik-admin/0.1")
-	return c.hc.Do(req)
+	client := http.Client{Transport: c.currentTransport()}
+	return client.Do(req)
 }
 
 // faultFromBody разбирает тело ошибки Напарника.
@@ -315,19 +336,48 @@ func (c *Client) CreateConversation(ctx context.Context, key, uiLang, progLang, 
 	return out.UUID, nil
 }
 
-// StreamMessages отправляет сообщение и открывает SSE-поток.
-func (c *Client) StreamMessages(ctx context.Context, key, conversation string, body MessageRequest) (*Stream, error) {
-	resp, err := c.request(ctx, key, http.MethodPost, "/conversations/"+conversation+"/messages", body, "text/event-stream")
+type ConversationMessage struct {
+	UUID       string          `json:"uuid"`
+	ParentUUID string          `json:"parent_uuid"`
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content"`
+}
+
+// ConversationMessages reads the stored messages and their parent links.
+func (c *Client) ConversationMessages(ctx context.Context, key, conversation string) ([]ConversationMessage, error) {
+	resp, err := c.request(ctx, key, http.MethodGet, "/conversations/"+url.PathEscape(conversation), nil, "")
 	if err != nil {
 		return nil, err
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return nil, faultFromBody(resp.StatusCode, data)
+	}
+	var result struct {
+		Messages []ConversationMessage `json:"messages"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(&result); err != nil {
+		return nil, err
+	}
+	return result.Messages, nil
+}
+
+// StreamMessages отправляет сообщение и открывает SSE-поток.
+func (c *Client) StreamMessages(ctx context.Context, key, conversation string, body MessageRequest) (*Stream, error) {
+	streamCtx, cancel := context.WithCancel(ctx)
+	resp, err := c.request(streamCtx, key, http.MethodPost, "/conversations/"+conversation+"/messages", body, "text/event-stream")
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer cancel()
 		defer resp.Body.Close()
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return nil, faultFromBody(resp.StatusCode, data)
 	}
 
-	streamCtx, cancel := context.WithCancel(ctx)
 	ch := make(chan Packet)
 	st := &Stream{Packets: ch, ch: ch, done: make(chan struct{}), cancel: cancel}
 
@@ -335,9 +385,22 @@ func (c *Client) StreamMessages(ctx context.Context, key, conversation string, b
 		defer close(st.done)
 		defer close(st.ch)
 		defer resp.Body.Close()
+		defer cancel()
 
-		for ev := range sseRead(streamCtx, resp.Body) {
-			if strings.TrimSpace(ev.Data) == "[DONE]" || ev.Data == "" {
+		finished := false
+		for ev := range sse.Read(streamCtx, resp.Body) {
+			if ev.Err != nil {
+				if err := streamCtx.Err(); err != nil {
+					st.err = err
+				} else {
+					st.err = &Fault{Status: http.StatusBadGateway, Code: "bad_stream", Message: "ошибка чтения потока Напарника: " + ev.Err.Error()}
+				}
+				return
+			}
+			if strings.TrimSpace(ev.Data) == "[DONE]" {
+				break
+			}
+			if ev.Data == "" {
 				continue
 			}
 			var p Packet
@@ -349,11 +412,22 @@ func (c *Client) StreamMessages(ctx context.Context, key, conversation string, b
 				st.err = packetFault(p)
 				return
 			}
+			if p.Finished && (body.NoGenerate || p.Role == "assistant" && p.Content != nil) {
+				finished = true
+			} else if !body.NoGenerate && p.UUID != "" && !p.Finished {
+				finished = false
+			}
 			select {
 			case st.ch <- p:
 			case <-streamCtx.Done():
+				st.err = streamCtx.Err()
 				return
 			}
+		}
+		if err := streamCtx.Err(); err != nil {
+			st.err = err
+		} else if !finished {
+			st.err = &Fault{Status: http.StatusBadGateway, Code: "bad_stream", Message: "поток Напарника завершился без финального сообщения"}
 		}
 	}()
 	return st, nil

@@ -21,7 +21,7 @@ type Poller struct {
 	store  *store.Store
 	client *naparnik.Client
 	cipher *secrets.Cipher
-	cfg    *config.Config
+	cfg    *config.Runtime
 	log    *slog.Logger
 
 	mu     sync.Mutex
@@ -30,7 +30,7 @@ type Poller struct {
 }
 
 // New создаёт поллер.
-func New(st *store.Store, client *naparnik.Client, cipher *secrets.Cipher, cfg *config.Config, log *slog.Logger) *Poller {
+func New(st *store.Store, client *naparnik.Client, cipher *secrets.Cipher, cfg *config.Runtime, log *slog.Logger) *Poller {
 	return &Poller{
 		store: st, client: client, cipher: cipher, cfg: cfg, log: log,
 		flight: map[int64]chan struct{}{}, levels: map[int64]string{},
@@ -42,13 +42,22 @@ func (p *Poller) Start(ctx context.Context) {
 	go func() {
 		// Первый опрос — сразу, чтобы админка не была пустой.
 		p.RefreshAll(ctx)
-		ticker := time.NewTicker(p.cfg.BudgetPollInterval.D())
-		defer ticker.Stop()
+		last := time.Now()
 		for {
+			cfg, changed := p.cfg.Watch()
+			timer := time.NewTimer(time.Until(last.Add(cfg.BudgetPollInterval.D())))
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return
-			case <-ticker.C:
+			case <-changed:
+				timer.Stop()
+			case <-timer.C:
+				// An interval increase may have raced with the timer firing.
+				if time.Since(last) < p.cfg.Snapshot().BudgetPollInterval.D() {
+					continue
+				}
+				last = time.Now()
 				p.RefreshAll(ctx)
 			}
 		}
@@ -156,27 +165,28 @@ func ruUpstreamText(code, fallback string) string {
 
 // checkAlerts сравнивает уровень расхода с порогами и шлёт webhook при смене уровня.
 func (p *Poller) checkAlerts(ctx context.Context, keyID int64, s store.Sample) {
+	cfg := p.cfg.Snapshot()
 	level := ""
 	switch {
-	case s.UsedWeek >= p.cfg.CritPercent || s.Used5h >= p.cfg.CritPercent:
+	case s.UsedWeek >= cfg.CritPercent || s.Used5h >= cfg.CritPercent:
 		level = "crit"
-	case s.UsedWeek >= p.cfg.WarnPercent || s.Used5h >= p.cfg.WarnPercent:
+	case s.UsedWeek >= cfg.WarnPercent || s.Used5h >= cfg.WarnPercent:
 		level = "warn"
 	}
 	p.mu.Lock()
 	prev := p.levels[keyID]
 	p.levels[keyID] = level
 	p.mu.Unlock()
-	if level == "" || level == prev || p.cfg.AlertWebhook == "" {
+	if level == "" || level == prev || cfg.AlertWebhook == "" {
 		return
 	}
 	payload, _ := json.Marshal(map[string]any{
 		"key_id": keyID, "level": level,
 		"used_5h": s.Used5h, "used_week": s.UsedWeek,
-		"threshold": map[string]float64{"warn": p.cfg.WarnPercent, "crit": p.cfg.CritPercent},
+		"threshold": map[string]float64{"warn": cfg.WarnPercent, "crit": cfg.CritPercent},
 		"time":      s.TS.UTC().Format(time.RFC3339),
 	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.cfg.AlertWebhook, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.AlertWebhook, bytes.NewReader(payload))
 	if err != nil {
 		return
 	}

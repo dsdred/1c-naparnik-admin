@@ -1149,12 +1149,18 @@ async function renderSessions(main) {
             <td class="mono small muted">${esc(String(s.conversation).slice(0, 8))}…</td>
             <td class="small muted">${fmtTime(s.updated_at)}</td>
             <td style="text-align:right">
-              <button class="btn ghost small" onclick="resetSession(${s.token_id}, '${esc(s.protocol)}', '${esc(s.session_id)}')">Сбросить</button>
+              <button class="btn ghost small" type="button" data-reset-session data-token-id="${esc(s.token_id)}" data-protocol="${esc(s.protocol)}" data-session-id="${esc(s.session_id)}">Сбросить</button>
             </td>
           </tr>`).join('') || '<tr><td colspan="6" class="muted">Активных сессий нет</td></tr>'}
         </tbody>
       </table>
     </div>`;
+  main.querySelectorAll('[data-reset-session]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const { tokenId, protocol, sessionId } = button.dataset;
+      resetSession(tokenId, protocol, sessionId);
+    });
+  });
 }
 
 async function resetSession(tokenID, protocol, sessionID) {
@@ -1754,6 +1760,7 @@ claude`,
   },
   {
     id: 'codex',
+    proto: 'responses',
     name: 'Codex CLI',
     note: '~/.codex/config.toml',
     verified: false,
@@ -1809,7 +1816,7 @@ gemini --model ${c.model}`,
 // Клиенты без явного протокола работают через OpenAI-совместимый эндпоинт.
 CONNECT_CLIENTS.forEach((cl) => { if (!cl.proto) cl.proto = 'openai'; });
 
-const CONNECT_PROTO_NAMES = { openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Gemini' };
+const CONNECT_PROTO_NAMES = { openai: 'OpenAI Chat Completions', responses: 'OpenAI Responses', anthropic: 'Anthropic', gemini: 'Gemini' };
 
 function connectBadge(ok) {
   return ok
@@ -1954,7 +1961,7 @@ function paintConnect(main) {
   } else if (token && !token.secret_available) {
     warnings.push(`<p class="muted small">У токена «${esc(token.name)}» значение не сохранено — вставьте его из диалога выпуска.</p>`);
   }
-  const proto = token && token.provider ? (token.provider === 'responses' ? 'openai' : token.provider) : '';
+  const proto = token && token.provider;
   if (proto && proto !== cl.proto) {
     warnings.push(`<p class="small" style="color:var(--warn)">Токен ограничен протоколом «${esc(CONNECT_PROTO_NAMES[proto] || proto)}», а ${esc(cl.name)} работает через ${esc(CONNECT_PROTO_NAMES[cl.proto])}. Возьмите токен без ограничения или с нужным протоколом.</p>`);
   }

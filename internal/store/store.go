@@ -68,6 +68,7 @@ type Session struct {
 	Conversation string    `json:"conversation"`
 	Parent       string    `json:"parent"`
 	ToolsJSON    string    `json:"-"`
+	PendingJSON  string    `json:"-"`
 	Fingerprint  string    `json:"fingerprint"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
@@ -161,6 +162,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 	conversation TEXT NOT NULL,
 	parent TEXT NOT NULL DEFAULT '',
 	tools_json TEXT NOT NULL DEFAULT '',
+	pending_json TEXT NOT NULL DEFAULT '',
 	fingerprint TEXT NOT NULL DEFAULT '',
 	created_at INTEGER NOT NULL,
 	updated_at INTEGER NOT NULL,
@@ -225,6 +227,18 @@ CREATE TABLE IF NOT EXISTS settings (
 	// Миграция: текст вопроса пользователя в журнале запросов.
 	// У старых записей он пустой — тогда содержимое не сохранялось.
 	_, _ = s.db.Exec(`ALTER TABLE request_log ADD COLUMN prompt TEXT NOT NULL DEFAULT ''`)
+	var pending int
+	if err := s.db.QueryRow(`SELECT count(*) FROM pragma_table_info('sessions') WHERE name='pending_json'`).Scan(&pending); err != nil {
+		return err
+	}
+	if pending == 0 {
+		if _, err := s.db.Exec(`ALTER TABLE sessions ADD COLUMN pending_json TEXT NOT NULL DEFAULT ''`); err != nil {
+			// Another instance may have finished the migration since the first read.
+			if checkErr := s.db.QueryRow(`SELECT count(*) FROM pragma_table_info('sessions') WHERE name='pending_json'`).Scan(&pending); checkErr != nil || pending == 0 {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -473,9 +487,9 @@ func (s *Store) GetSession(ctx context.Context, tokenID int64, protocol, session
 	var ss Session
 	var created, updated int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT token_id, protocol, session_id, conversation, parent, tools_json, fingerprint, created_at, updated_at
+		`SELECT token_id, protocol, session_id, conversation, parent, tools_json, pending_json, fingerprint, created_at, updated_at
 		 FROM sessions WHERE token_id=? AND protocol=? AND session_id=?`, tokenID, protocol, sessionID).
-		Scan(&ss.TokenID, &ss.Protocol, &ss.SessionID, &ss.Conversation, &ss.Parent, &ss.ToolsJSON, &ss.Fingerprint, &created, &updated)
+		Scan(&ss.TokenID, &ss.Protocol, &ss.SessionID, &ss.Conversation, &ss.Parent, &ss.ToolsJSON, &ss.PendingJSON, &ss.Fingerprint, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ss, ErrNotFound
 	}
@@ -491,20 +505,30 @@ func (s *Store) GetSession(ctx context.Context, tokenID int64, protocol, session
 func (s *Store) SaveSession(ctx context.Context, ss Session) error {
 	now := time.Now().Unix()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO sessions(token_id, protocol, session_id, conversation, parent, tools_json, fingerprint, created_at, updated_at)
-		 VALUES(?,?,?,?,?,?,?,?,?)
+		`INSERT INTO sessions(token_id, protocol, session_id, conversation, parent, tools_json, pending_json, fingerprint, created_at, updated_at)
+	 VALUES(?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(token_id, protocol, session_id) DO UPDATE SET
 		   conversation=excluded.conversation, parent=excluded.parent,
-		   tools_json=excluded.tools_json, fingerprint=excluded.fingerprint, updated_at=excluded.updated_at`,
-		ss.TokenID, ss.Protocol, ss.SessionID, ss.Conversation, ss.Parent, ss.ToolsJSON, ss.Fingerprint, now, now)
+	   tools_json=excluded.tools_json, pending_json=excluded.pending_json, fingerprint=excluded.fingerprint, updated_at=excluded.updated_at`,
+		ss.TokenID, ss.Protocol, ss.SessionID, ss.Conversation, ss.Parent, ss.ToolsJSON, ss.PendingJSON, ss.Fingerprint, now, now)
 	return err
 }
 
-// DeleteSession удаляет привязку (сброс диалога).
+// DeleteSession удаляет привязку и контрольные точки одной транзакцией.
 func (s *Store) DeleteSession(ctx context.Context, tokenID int64, protocol, sessionID string) error {
-	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM sessions WHERE token_id=? AND protocol=? AND session_id=?`, tokenID, protocol, sessionID)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := deleteCheckpoints(ctx, tx, tokenID, protocol, sessionID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE token_id=? AND protocol=? AND session_id=?`,
+		tokenID, protocol, sessionID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ---------- контрольные точки истории ----------
@@ -581,7 +605,15 @@ func (s *Store) CountCheckpoints(ctx context.Context, tokenID int64, protocol, s
 // DeleteCheckpoints забывает все точки сессии: сброс диалога и восстановление
 // после ответа «диалог не найден».
 func (s *Store) DeleteCheckpoints(ctx context.Context, tokenID int64, protocol, sessionID string) error {
-	_, err := s.db.ExecContext(ctx,
+	return deleteCheckpoints(ctx, s.db, tokenID, protocol, sessionID)
+}
+
+type contextExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func deleteCheckpoints(ctx context.Context, db contextExecer, tokenID int64, protocol, sessionID string) error {
+	_, err := db.ExecContext(ctx,
 		`DELETE FROM session_checkpoints WHERE token_id=? AND protocol=? AND session_id=?`,
 		tokenID, protocol, sessionID)
 	return err
@@ -616,8 +648,20 @@ func (s *Store) ListSessions(ctx context.Context, limit int) ([]Session, error) 
 
 // PurgeSessions удаляет привязки старше указанного момента.
 func (s *Store) PurgeSessions(ctx context.Context, olderThan time.Time) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE updated_at < ?`, olderThan.Unix())
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM session_checkpoints AS cp
+		WHERE NOT EXISTS (SELECT 1 FROM sessions AS s WHERE s.token_id=cp.token_id
+		AND s.protocol=cp.protocol AND s.session_id=cp.session_id AND s.updated_at>=?)`, olderThan.Unix()); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE updated_at < ?`, olderThan.Unix()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ---------- бюджет ----------

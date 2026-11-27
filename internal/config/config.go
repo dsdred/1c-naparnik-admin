@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -177,11 +178,27 @@ func (c *Config) Save() error {
 	if err != nil {
 		return err
 	}
-	tmp := c.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(c.path), "."+filepath.Base(c.path)+"-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, c.path)
+	defer os.Remove(f.Name())
+	_, writeErr := f.Write(data)
+	closeErr := f.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	for attempt := 0; ; attempt++ {
+		err := os.Rename(f.Name(), c.path)
+		if err == nil || runtime.GOOS != "windows" || !os.IsPermission(err) || attempt == 5 {
+			return err
+		}
+		// Windows services such as antivirus scanners can briefly block replacement.
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // DBPath возвращает путь к файлу базы.

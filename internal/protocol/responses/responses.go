@@ -23,7 +23,7 @@ type Handler struct {
 	Auth   *gateway.Auth
 	Engine *gateway.Engine
 	Store  *store.Store
-	Cfg    *config.Config
+	Cfg    config.Source
 	Log    *slog.Logger
 }
 
@@ -60,7 +60,7 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, nil, gateway.NewError(http.StatusBadRequest, "invalid_request_error", "Не удалось разобрать тело запроса: "+err.Error()))
 		return
 	}
-	principal, err := h.Auth.Resolve(r.Context(), gateway.FromBearer(r))
+	principal, err := h.Auth.Resolve(r.Context(), gateway.FromBearer(r), "responses")
 	if err != nil {
 		h.writeError(w, nil, err)
 		return
@@ -81,7 +81,8 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		SessionID: sessionID(r), Turns: turns, Tools: tools,
 	}
 
-	respID := "resp_" + randomID()
+	respID, created := "resp_"+randomID(), time.Now().Unix()
+	itemID := "msg_" + randomID()
 	if !req.Stream {
 		reply, err := h.Engine.Execute(r.Context(), input)
 		if err != nil {
@@ -89,7 +90,7 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.logRequest(r, principal, req.Model, 200, "", reply, time.Since(started), false, gateway.LastUserText(turns))
-		httpx.JSON(w, http.StatusOK, buildResponse(respID, req.Model, reply))
+		httpx.JSON(w, http.StatusOK, buildResponse(respID, req.Model, created, responseOutput(reply, itemID), reply.Usage))
 		return
 	}
 
@@ -97,32 +98,32 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	defer sw.Close()
 
 	base := map[string]any{
-		"id": respID, "object": "response", "created_at": time.Now().Unix(),
+		"id": respID, "object": "response", "created_at": created,
 		"model": req.Model, "status": "in_progress", "output": []any{},
 	}
 	sw.Event("response.created", mustJSON(map[string]any{"type": "response.created", "response": base}))
 	sw.Event("response.in_progress", mustJSON(map[string]any{"type": "response.in_progress", "response": base}))
 
-	if h.streamMode(principal) == "deltas" {
-		itemID := "msg_" + randomID()
-		added := false
-		input.OnText = func(text string) {
-			if !added {
-				added = true
-				sw.Event("response.output_item.added", mustJSON(map[string]any{
-					"type": "response.output_item.added", "output_index": 0,
-					"item": map[string]any{"type": "message", "id": itemID, "role": "assistant", "content": []any{}, "status": "in_progress"},
-				}))
-				sw.Event("response.content_part.added", mustJSON(map[string]any{
-					"type": "response.content_part.added", "item_id": itemID, "output_index": 0, "content_index": 0,
-					"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
-				}))
-			}
-			sw.Event("response.output_text.delta", mustJSON(map[string]any{
-				"type": "response.output_text.delta", "item_id": itemID, "output_index": 0,
-				"content_index": 0, "delta": text,
+	added := false
+	sendText := func(text string) {
+		if !added {
+			added = true
+			sw.Event("response.output_item.added", mustJSON(map[string]any{
+				"type": "response.output_item.added", "output_index": 0,
+				"item": map[string]any{"type": "message", "id": itemID, "role": "assistant", "content": []any{}, "status": "in_progress"},
+			}))
+			sw.Event("response.content_part.added", mustJSON(map[string]any{
+				"type": "response.content_part.added", "item_id": itemID, "output_index": 0, "content_index": 0,
+				"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
 			}))
 		}
+		sw.Event("response.output_text.delta", mustJSON(map[string]any{
+			"type": "response.output_text.delta", "item_id": itemID, "output_index": 0,
+			"content_index": 0, "delta": text,
+		}))
+	}
+	if h.streamMode(principal) == "deltas" {
+		input.OnText = sendText
 	}
 
 	input.OnServerTool = func(string) { sw.Start() }
@@ -139,25 +140,11 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	h.logRequest(r, principal, req.Model, 200, "", reply, time.Since(started), true, gateway.LastUserText(turns))
 
 	// Финальный набор элементов вывода.
+	output := responseOutput(reply, itemID)
 	outputIndex := 0
 	if text := reply.Text(); text != "" {
-		itemID := "msg_" + randomID()
-		item := map[string]any{
-			"type": "message", "id": itemID, "role": "assistant", "status": "completed",
-			"content": []any{map[string]any{"type": "output_text", "text": text, "annotations": []any{}}},
-		}
-		sw.Event("response.output_item.added", mustJSON(map[string]any{
-			"type": "response.output_item.added", "output_index": outputIndex, "item": item,
-		}))
-		sw.Event("response.content_part.added", mustJSON(map[string]any{
-			"type": "response.content_part.added", "item_id": itemID, "output_index": outputIndex,
-			"content_index": 0, "part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
-		}))
-		if h.streamMode(principal) != "deltas" {
-			sw.Event("response.output_text.delta", mustJSON(map[string]any{
-				"type": "response.output_text.delta", "item_id": itemID, "output_index": outputIndex,
-				"content_index": 0, "delta": text,
-			}))
+		if !added {
+			sendText(text)
 		}
 		sw.Event("response.output_text.done", mustJSON(map[string]any{
 			"type": "response.output_text.done", "item_id": itemID, "output_index": outputIndex,
@@ -168,34 +155,33 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 			"part": map[string]any{"type": "output_text", "text": text, "annotations": []any{}},
 		}))
 		sw.Event("response.output_item.done", mustJSON(map[string]any{
-			"type": "response.output_item.done", "output_index": outputIndex, "item": item,
+			"type": "response.output_item.done", "output_index": outputIndex, "item": output[outputIndex],
 		}))
 		outputIndex++
 	}
-	for _, c := range reply.ToolCalls() {
-		item := map[string]any{
-			"type": "function_call", "id": "fc_" + randomID(), "call_id": c.ID,
-			"name": c.Function.Name, "arguments": c.Function.Arguments, "status": "completed",
+	for ; outputIndex < len(output); outputIndex++ {
+		item := output[outputIndex]
+		pending := map[string]any{
+			"type": "function_call", "id": item["id"], "call_id": item["call_id"],
+			"name": item["name"], "arguments": "", "status": "in_progress",
 		}
 		sw.Event("response.output_item.added", mustJSON(map[string]any{
-			"type": "response.output_item.added", "output_index": outputIndex, "item": item,
+			"type": "response.output_item.added", "output_index": outputIndex, "item": pending,
 		}))
 		sw.Event("response.function_call_arguments.delta", mustJSON(map[string]any{
 			"type": "response.function_call_arguments.delta", "item_id": item["id"],
-			"output_index": outputIndex, "delta": c.Function.Arguments,
+			"output_index": outputIndex, "delta": item["arguments"],
 		}))
 		sw.Event("response.function_call_arguments.done", mustJSON(map[string]any{
 			"type": "response.function_call_arguments.done", "item_id": item["id"],
-			"output_index": outputIndex, "arguments": c.Function.Arguments,
+			"output_index": outputIndex, "arguments": item["arguments"],
 		}))
 		sw.Event("response.output_item.done", mustJSON(map[string]any{
 			"type": "response.output_item.done", "output_index": outputIndex, "item": item,
 		}))
-		outputIndex++
 	}
 
-	final := buildResponse(respID, req.Model, reply)
-	final["status"] = "completed"
+	final := buildResponse(respID, req.Model, created, output, reply.Usage)
 	sw.Event("response.completed", mustJSON(map[string]any{"type": "response.completed", "response": final}))
 }
 
@@ -203,7 +189,7 @@ func (h *Handler) streamMode(p *gateway.Principal) string {
 	if p.Token.StreamMode == "deltas" || p.Token.StreamMode == "final" {
 		return p.Token.StreamMode
 	}
-	return h.Cfg.StreamMode
+	return h.Cfg.Snapshot().StreamMode
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, p *gateway.Principal, err error) {
@@ -319,11 +305,11 @@ func contentText(raw json.RawMessage) (string, error) {
 	return b.String(), nil
 }
 
-func buildResponse(id, model string, reply *gateway.Reply) map[string]any {
-	output := []any{}
+func responseOutput(reply *gateway.Reply, itemID string) []map[string]any {
+	output := []map[string]any{}
 	if text := reply.Text(); text != "" {
 		output = append(output, map[string]any{
-			"type": "message", "id": "msg_" + randomID(), "role": "assistant", "status": "completed",
+			"type": "message", "id": itemID, "role": "assistant", "status": "completed",
 			"content": []any{map[string]any{"type": "output_text", "text": text, "annotations": []any{}}},
 		})
 	}
@@ -333,18 +319,22 @@ func buildResponse(id, model string, reply *gateway.Reply) map[string]any {
 			"name": c.Function.Name, "arguments": c.Function.Arguments, "status": "completed",
 		})
 	}
+	return output
+}
+
+func buildResponse(id, model string, created int64, output []map[string]any, usage *naparnik.Usage) map[string]any {
 	out := map[string]any{
-		"id": id, "object": "response", "created_at": time.Now().Unix(),
+		"id": id, "object": "response", "created_at": created,
 		"model": model, "status": "completed", "output": output,
 	}
-	if reply.Usage != nil {
+	if usage != nil {
 		u := map[string]any{
-			"input_tokens":  reply.Usage.PromptTokens,
-			"output_tokens": reply.Usage.CompletionTokens,
-			"total_tokens":  reply.Usage.TotalTokens,
+			"input_tokens":  usage.PromptTokens,
+			"output_tokens": usage.CompletionTokens,
+			"total_tokens":  usage.TotalTokens,
 		}
-		if reply.Usage.CachedTokens > 0 && reply.Usage.CachedTokens <= reply.Usage.PromptTokens {
-			u["input_tokens_details"] = map[string]any{"cached_tokens": reply.Usage.CachedTokens}
+		if usage.CachedTokens > 0 && usage.CachedTokens <= usage.PromptTokens {
+			u["input_tokens_details"] = map[string]any{"cached_tokens": usage.CachedTokens}
 		}
 		out["usage"] = u
 	}
@@ -369,7 +359,7 @@ func (h *Handler) modelName(model string) string {
 	if strings.TrimSpace(model) != "" {
 		return model
 	}
-	return h.Cfg.ModelName()
+	return h.Cfg.Snapshot().ModelName()
 }
 
 func sessionID(r *http.Request) string {

@@ -135,6 +135,7 @@ type KeyBrief struct {
 
 // Overview собирает сводку за сутки.
 func (p *Poller) Overview(ctx context.Context) (*Overview, error) {
+	cfg := p.cfg.Snapshot()
 	keys, err := p.store.ListKeys(ctx)
 	if err != nil {
 		return nil, err
@@ -150,9 +151,9 @@ func (p *Poller) Overview(ctx context.Context) (*Overview, error) {
 				ResetWeek: latest.ResetWk,
 			}
 			switch {
-			case latest.UsedWeek >= p.cfg.CritPercent || latest.Used5h >= p.cfg.CritPercent:
+			case latest.UsedWeek >= cfg.CritPercent || latest.Used5h >= cfg.CritPercent:
 				brief.Level = "crit"
-			case latest.UsedWeek >= p.cfg.WarnPercent || latest.Used5h >= p.cfg.WarnPercent:
+			case latest.UsedWeek >= cfg.WarnPercent || latest.Used5h >= cfg.WarnPercent:
 				brief.Level = "warn"
 			}
 		}

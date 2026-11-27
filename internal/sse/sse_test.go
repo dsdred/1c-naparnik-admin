@@ -2,9 +2,35 @@ package sse
 
 import (
 	"context"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 )
+
+func TestReadReportsBrokenFrames(t *testing.T) {
+	for name, tc := range map[string]struct {
+		reader io.Reader
+		want   error
+	}{
+		"incomplete frame": {strings.NewReader("data: incomplete\n"), io.ErrUnexpectedEOF},
+		"read failure":     {io.MultiReader(strings.NewReader("data: incomplete\n"), failedReader{}), io.ErrClosedPipe},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var events []Event
+			for event := range Read(context.Background(), tc.reader) {
+				events = append(events, event)
+			}
+			if len(events) != 1 || !errors.Is(events[0].Err, tc.want) || events[0].Data != "" {
+				t.Fatalf("expected %v without partial data, got %+v", tc.want, events)
+			}
+		})
+	}
+}
+
+type failedReader struct{}
+
+func (failedReader) Read([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
 func TestReadParsesEvents(t *testing.T) {
 	input := ": keep-alive\n\n" +

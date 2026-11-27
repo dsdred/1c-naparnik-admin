@@ -12,10 +12,11 @@ import (
 type Event struct {
 	Name string
 	Data string
+	Err  error
 }
 
-// Read разбирает поток SSE и отдаёт события в канал. Канал закрывается
-// при EOF, ошибке чтения или отмене контекста.
+// Read разбирает поток SSE. Ошибка чтения или неполный кадр передаются через
+// Err перед закрытием канала. EOF после полного кадра и отмена закрывают канал.
 func Read(ctx context.Context, r io.Reader) <-chan Event {
 	out := make(chan Event)
 	go func() {
@@ -67,7 +68,16 @@ func Read(ctx context.Context, r io.Reader) <-chan Event {
 			default:
 			}
 		}
-		dispatch()
+		err := scanner.Err()
+		if err == nil && (len(data) > 0 || name != "") {
+			err = io.ErrUnexpectedEOF
+		}
+		if err != nil {
+			select {
+			case out <- Event{Err: err}:
+			case <-ctx.Done():
+			}
+		}
 	}()
 	return out
 }
