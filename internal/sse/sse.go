@@ -12,6 +12,7 @@ import (
 type Event struct {
 	Name string
 	Data string
+	Err  error
 }
 
 // Read разбирает поток SSE и отдаёт события в канал. Канал закрывается
@@ -67,7 +68,16 @@ func Read(ctx context.Context, r io.Reader) <-chan Event {
 			default:
 			}
 		}
-		dispatch()
+		err := scanner.Err()
+		if err == nil && (len(data) > 0 || name != "") {
+			err = io.ErrUnexpectedEOF
+		}
+		if err != nil {
+			select {
+			case out <- Event{Err: err}:
+			case <-ctx.Done():
+			}
+		}
 	}()
 	return out
 }

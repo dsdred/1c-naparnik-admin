@@ -15,8 +15,6 @@ import (
 )
 
 // sseRead — обёртка над разбором SSE, чтобы не тянуть зависимость в вызывающий код.
-func sseRead(ctx context.Context, r io.Reader) <-chan sse.Event { return sse.Read(ctx, r) }
-
 // Client — клиент Напарника. Один экземпляр на процесс, ключ передаётся в каждый вызов.
 type Client struct {
 	base string
@@ -317,17 +315,19 @@ func (c *Client) CreateConversation(ctx context.Context, key, uiLang, progLang, 
 
 // StreamMessages отправляет сообщение и открывает SSE-поток.
 func (c *Client) StreamMessages(ctx context.Context, key, conversation string, body MessageRequest) (*Stream, error) {
-	resp, err := c.request(ctx, key, http.MethodPost, "/conversations/"+conversation+"/messages", body, "text/event-stream")
+	streamCtx, cancel := context.WithCancel(ctx)
+	resp, err := c.request(streamCtx, key, http.MethodPost, "/conversations/"+conversation+"/messages", body, "text/event-stream")
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
+		defer cancel()
 		defer resp.Body.Close()
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return nil, faultFromBody(resp.StatusCode, data)
 	}
 
-	streamCtx, cancel := context.WithCancel(ctx)
 	ch := make(chan Packet)
 	st := &Stream{Packets: ch, ch: ch, done: make(chan struct{}), cancel: cancel}
 
@@ -335,9 +335,22 @@ func (c *Client) StreamMessages(ctx context.Context, key, conversation string, b
 		defer close(st.done)
 		defer close(st.ch)
 		defer resp.Body.Close()
+		defer cancel()
 
-		for ev := range sseRead(streamCtx, resp.Body) {
-			if strings.TrimSpace(ev.Data) == "[DONE]" || ev.Data == "" {
+		finished := false
+		for ev := range sse.Read(streamCtx, resp.Body) {
+			if ev.Err != nil {
+				if err := streamCtx.Err(); err != nil {
+					st.err = err
+				} else {
+					st.err = &Fault{Status: http.StatusBadGateway, Code: "bad_stream", Message: "ошибка чтения потока Напарника: " + ev.Err.Error()}
+				}
+				return
+			}
+			if strings.TrimSpace(ev.Data) == "[DONE]" {
+				break
+			}
+			if ev.Data == "" {
 				continue
 			}
 			var p Packet
@@ -349,11 +362,22 @@ func (c *Client) StreamMessages(ctx context.Context, key, conversation string, b
 				st.err = packetFault(p)
 				return
 			}
+			if p.Finished && (body.NoGenerate || p.Role == "assistant" && p.Content != nil) {
+				finished = true
+			} else if !body.NoGenerate && p.UUID != "" && !p.Finished {
+				finished = false
+			}
 			select {
 			case st.ch <- p:
 			case <-streamCtx.Done():
+				st.err = streamCtx.Err()
 				return
 			}
+		}
+		if err := streamCtx.Err(); err != nil {
+			st.err = err
+		} else if !finished {
+			st.err = &Fault{Status: http.StatusBadGateway, Code: "bad_stream", Message: "поток Напарника завершился без финального сообщения"}
 		}
 	}()
 	return st, nil
