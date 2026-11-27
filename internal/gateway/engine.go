@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -124,6 +125,10 @@ type Input struct {
 
 // Engine — исполнитель запросов.
 type Engine struct {
+	// Log получает предупреждения о сбоях сохранения служебного состояния.
+	// Если не задан, используется стандартный журнал slog.
+	Log *slog.Logger
+
 	client *naparnik.Client
 	store  *store.Store
 	cfg    *config.Config
@@ -444,19 +449,6 @@ func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string,
 		}
 	}
 
-	// Контрольная точка: по отпечатку этого ответа следующий запрос найдёт,
-	// в какой ветке он находится, даже если клиент откатит или поправит историю.
-	if text, calls := reply.Text(), reply.ToolCalls(); strings.TrimSpace(text) != "" || len(calls) > 0 {
-		_ = e.store.SaveCheckpoint(ctx, store.Checkpoint{
-			TokenID:      in.Token.ID,
-			Protocol:     in.Protocol,
-			SessionID:    sessionKey,
-			Fingerprint:  answerDigest(text, calls),
-			Conversation: conversation,
-			Parent:       lastUUID,
-		})
-	}
-
 	if len(toolMap) > 0 {
 		if data, err := json.Marshal(toolMap); err == nil {
 			binding.ToolsJSON = string(data)
@@ -468,8 +460,33 @@ func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string,
 	binding.Conversation = conversation
 	binding.Parent = lastUUID
 	binding.Fingerprint = fingerprint
+	log := e.Log
+	if log == nil {
+		log = slog.Default()
+	}
+	// Ответ уже готов: сбой служебной записи не должен превращать его в ошибку.
+	// Сначала сохраняем привязку. Если база занята, не ждём ту же блокировку
+	// ещё раз при сохранении контрольной точки.
 	if err := e.store.SaveSession(ctx, binding); err != nil {
-		return nil, err
+		log.Warn("не удалось сохранить сессию; готовый ответ возвращён клиенту",
+			"token_id", in.Token.ID, "protocol", in.Protocol, "conversation", conversation, "err", err)
+		return reply, nil
+	}
+
+	// Контрольная точка: по отпечатку этого ответа следующий запрос найдёт,
+	// в какой ветке он находится, даже если клиент откатит или поправит историю.
+	if text, calls := reply.Text(), reply.ToolCalls(); strings.TrimSpace(text) != "" || len(calls) > 0 {
+		if err := e.store.SaveCheckpoint(ctx, store.Checkpoint{
+			TokenID:      in.Token.ID,
+			Protocol:     in.Protocol,
+			SessionID:    sessionKey,
+			Fingerprint:  answerDigest(text, calls),
+			Conversation: conversation,
+			Parent:       lastUUID,
+		}); err != nil {
+			log.Warn("не удалось сохранить контрольную точку; готовый ответ возвращён клиенту",
+				"token_id", in.Token.ID, "protocol", in.Protocol, "conversation", conversation, "err", err)
+		}
 	}
 	return reply, nil
 }

@@ -68,6 +68,7 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 		Log:     log,
 		servers: map[string]*http.Server{},
 	}
+	a.Engine.Log = log
 	return a, nil
 }
 
