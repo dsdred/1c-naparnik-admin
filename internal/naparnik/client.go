@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -333,6 +334,33 @@ func (c *Client) CreateConversation(ctx context.Context, key, uiLang, progLang, 
 		return "", &Fault{Status: http.StatusBadGateway, Code: "bad_response", Message: "Напарник не вернул uuid диалога"}
 	}
 	return out.UUID, nil
+}
+
+type ConversationMessage struct {
+	UUID       string          `json:"uuid"`
+	ParentUUID string          `json:"parent_uuid"`
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content"`
+}
+
+// ConversationMessages reads the stored messages and their parent links.
+func (c *Client) ConversationMessages(ctx context.Context, key, conversation string) ([]ConversationMessage, error) {
+	resp, err := c.request(ctx, key, http.MethodGet, "/conversations/"+url.PathEscape(conversation), nil, "")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return nil, faultFromBody(resp.StatusCode, data)
+	}
+	var result struct {
+		Messages []ConversationMessage `json:"messages"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(&result); err != nil {
+		return nil, err
+	}
+	return result.Messages, nil
 }
 
 // StreamMessages отправляет сообщение и открывает SSE-поток.
