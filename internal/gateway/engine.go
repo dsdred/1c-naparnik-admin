@@ -245,12 +245,12 @@ func (e *Engine) Execute(ctx context.Context, in Input) (*Reply, error) {
 func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string, sticky, forceNew bool) (*Reply, error) {
 	binding, err := e.store.GetSession(ctx, in.Token.ID, in.Protocol, sessionKey)
 	expired := err == nil && e.cfg.SessionTTL.D() > 0 && timeSince(binding.UpdatedAt) > e.cfg.SessionTTL.D()
+	hasBinding := err == nil && !expired && binding.Conversation != ""
 	if expired {
 		if err := e.store.DeleteSession(ctx, in.Token.ID, in.Protocol, sessionKey); err != nil {
 			return nil, err
 		}
 	}
-	hasBinding := err == nil && !expired && binding.Conversation != ""
 
 	// Ищем в присланной истории последнюю реплику ассистента и её контрольную точку:
 	// продолжаем ту ветку, которую видит клиент, а не «последнюю отправленную».
@@ -326,6 +326,7 @@ func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string,
 	}
 
 	if newConversation {
+		binding.ToolsJSON = ""
 		// В новый диалог нельзя отправить role:tool: там ещё нет реплики ассистента
 		// с tool_calls, и Напарник отвечает 422 «tool responses can only be provided
 		// for existing tool calls». Поэтому результаты инструментов переносим текстом.
@@ -494,9 +495,6 @@ func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string,
 		})
 	}
 
-	if newConversation {
-		binding.ToolsJSON = ""
-	}
 	if len(toolMap) > 0 {
 		if data, err := json.Marshal(toolMap); err == nil {
 			binding.ToolsJSON = string(data)

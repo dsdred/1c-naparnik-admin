@@ -23,6 +23,7 @@ import (
 
 // Server — HTTP-слой админки.
 type Server struct {
+	ResetSession   func(context.Context, int64, string, string) error
 	Store          *store.Store
 	Cipher         *secrets.Cipher
 	Monitor        *monitor.Poller
@@ -30,7 +31,6 @@ type Server struct {
 	Log            *slog.Logger
 	Auth           *Auth
 	ApplyListeners func([]config.Listener) error
-	ResetSession   func(context.Context, int64, string, string) error
 }
 
 // Handler собирает маршруты админки.
