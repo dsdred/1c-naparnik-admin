@@ -1811,10 +1811,20 @@ gemini --model ${c.model}`,
 }`,
   },
   {
+    id: 'zcode',
+    name: 'ZCode',
+    note: 'провайдер «OpenAI Compatible»',
+    verified: true,
+    text: (c) => `Provider: OpenAI Compatible
+Base URL: ${c.openai_url}
+API Key: ${c.token}
+Model: ${c.model}`,
+  },
+  {
     id: 'curl',
     name: 'Проверка через curl',
     note: 'быстрый тест из консоли',
-    verified: false,
+    verified: true,
     text: (c) => `curl ${c.openai_url}/chat/completions \\
   -H "Authorization: Bearer ${c.token}" \\
   -H "Content-Type: application/json" \\
