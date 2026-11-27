@@ -131,7 +131,7 @@ type Engine struct {
 
 	client *naparnik.Client
 	store  *store.Store
-	cfg    *config.Config
+	cfg    config.Source
 
 	mu        sync.Mutex
 	locks     map[string]*keyLock
@@ -149,7 +149,7 @@ type keyLock struct {
 func (e *Engine) ContextWindow() int { return int(e.ctxWindow.Load()) }
 
 // New создаёт движок.
-func New(client *naparnik.Client, st *store.Store, cfg *config.Config) *Engine {
+func New(client *naparnik.Client, st *store.Store, cfg config.Source) *Engine {
 	return &Engine{client: client, store: st, cfg: cfg, locks: map[string]*keyLock{}}
 }
 
@@ -248,8 +248,9 @@ func (e *Engine) Execute(ctx context.Context, in Input) (*Reply, error) {
 // executeLocked выполняет запрос в уже занятой сессии. forceNew создаёт новый
 // диалог, даже если привязка есть.
 func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string, sticky, forceNew bool) (*Reply, error) {
+	cfg := e.cfg.Snapshot()
 	binding, err := e.store.GetSession(ctx, in.Token.ID, in.Protocol, sessionKey)
-	expired := err == nil && e.cfg.SessionTTL.D() > 0 && timeSince(binding.UpdatedAt) > e.cfg.SessionTTL.D()
+	expired := err == nil && cfg.SessionTTL.D() > 0 && timeSince(binding.UpdatedAt) > cfg.SessionTTL.D()
 	hasBinding := err == nil && !expired && binding.Conversation != ""
 	if expired {
 		if err := e.store.DeleteSession(ctx, in.Token.ID, in.Protocol, sessionKey); err != nil {
@@ -478,7 +479,7 @@ func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string,
 	if info, err := e.client.ContextTokens(ctx, in.Key, conversation, lastUUID); err == nil && info.MaxContextLength > 0 {
 		reply.Context = info
 		e.ctxWindow.Store(int64(info.MaxContextLength))
-		if e.cfg.AutoCompactAt > 0 && float64(info.TokenCount)/float64(info.MaxContextLength) >= e.cfg.AutoCompactAt {
+		if cfg.AutoCompactAt > 0 && float64(info.TokenCount)/float64(info.MaxContextLength) >= cfg.AutoCompactAt {
 			if _, err := e.client.Compact(ctx, in.Key, conversation, ""); err == nil {
 				if info2, err := e.client.ContextTokens(ctx, in.Key, conversation, ""); err == nil {
 					reply.Context = info2

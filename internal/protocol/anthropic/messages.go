@@ -23,7 +23,7 @@ type Handler struct {
 	Auth   *gateway.Auth
 	Engine *gateway.Engine
 	Store  *store.Store
-	Cfg    *config.Config
+	Cfg    config.Source
 	Log    *slog.Logger
 }
 
@@ -118,7 +118,8 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 
 	blockIndex := 0
 	textOpen := false
-	if h.streamMode(principal) == "deltas" {
+	streamMode := h.streamMode(principal)
+	if streamMode == "deltas" {
 		input.OnText = func(text string) {
 			if !textOpen {
 				textOpen = true
@@ -148,7 +149,7 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	}
 	h.logRequest(r, principal, req.Model, 200, "", reply, time.Since(started), true, gateway.LastUserText(turns))
 
-	if h.streamMode(principal) != "deltas" {
+	if streamMode != "deltas" {
 		if text := reply.Text(); text != "" {
 			sw.Event("content_block_start", mustJSON(map[string]any{
 				"type": "content_block_start", "index": blockIndex,
@@ -208,7 +209,7 @@ func (h *Handler) streamMode(p *gateway.Principal) string {
 	if p.Token.StreamMode == "deltas" || p.Token.StreamMode == "final" {
 		return p.Token.StreamMode
 	}
-	return h.Cfg.StreamMode
+	return h.Cfg.Snapshot().StreamMode
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, p *gateway.Principal, err error) {
@@ -447,7 +448,7 @@ func (h *Handler) modelName(model string) string {
 	if strings.TrimSpace(model) != "" {
 		return model
 	}
-	return h.Cfg.ModelName()
+	return h.Cfg.Snapshot().ModelName()
 }
 
 func sessionID(r *http.Request) string {
