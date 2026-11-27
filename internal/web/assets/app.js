@@ -1830,6 +1830,18 @@ export ANTHROPIC_MODEL=${c.model}
 claude`,
   },
   {
+    // DSH (DeepSeek Harness) работает через Anthropic Messages, как Claude Code,
+    // поэтому переменные те же. Живым подключением пока не проверялся.
+    id: 'dsh',
+    name: 'DSH (DeepSeek Harness)',
+    note: 'переменные окружения, Anthropic Messages',
+    verified: false,
+    proto: 'anthropic',
+    text: (c) => `export ANTHROPIC_BASE_URL=${c.anthropic_url}
+export ANTHROPIC_API_KEY=${c.token}
+export ANTHROPIC_MODEL=${c.model}`,
+  },
+  {
     id: 'codex',
     proto: 'responses',
     name: 'Codex CLI',
