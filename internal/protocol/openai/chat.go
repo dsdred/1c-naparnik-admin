@@ -111,6 +111,10 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	sw := httpx.NewWriter(w)
 	defer sw.Close()
+	chunkID, created := "chatcmpl-"+randomID(), time.Now().Unix()
+	sendChunk := func(delta map[string]any, finish *string, usage map[string]any) {
+		sw.Event("", chunkJSON(chunkID, created, req.Model, delta, finish, usage))
+	}
 
 	includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
 	// Первый чанк потока обязан нести роль: клиенты строят по нему сообщение.
@@ -120,18 +124,18 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		roleSent = true
-		sw.Event("", chunkJSON(req.Model, map[string]any{"role": "assistant", "content": ""}, nil, nil))
+		sendChunk(map[string]any{"role": "assistant", "content": ""}, nil, nil)
 	}
 	if streamMode == "deltas" {
 		// Engine вызывает эти обработчики только на подтверждённых пакетах:
 		// черновики content_delta клиенту не транслируются.
 		input.OnText = func(text string) {
 			sendRole()
-			sw.Event("", chunkJSON(req.Model, map[string]any{"content": text}, nil, nil))
+			sendChunk(map[string]any{"content": text}, nil, nil)
 		}
 		input.OnReasoning = func(text string) {
 			sendRole()
-			sw.Event("", chunkJSON(req.Model, map[string]any{"reasoning_content": text, "reasoning": text}, nil, nil))
+			sendChunk(map[string]any{"reasoning_content": text, "reasoning": text}, nil, nil)
 		}
 	}
 	input.OnServerTool = func(string) { sw.Start() }
@@ -154,10 +158,10 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	if streamMode != "deltas" {
 		if r := reply.Reasoning(); r != "" {
-			sw.Event("", chunkJSON(req.Model, map[string]any{"reasoning_content": r, "reasoning": r}, nil, nil))
+			sendChunk(map[string]any{"reasoning_content": r, "reasoning": r}, nil, nil)
 		}
 		if text := reply.Text(); text != "" {
-			sw.Event("", chunkJSON(req.Model, map[string]any{"content": text}, nil, nil))
+			sendChunk(map[string]any{"content": text}, nil, nil)
 		}
 	}
 	// В режиме deltas подтверждённые сообщения уже ушли из OnText/OnReasoning:
@@ -175,17 +179,17 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				},
 			})
 		}
-		sw.Event("", chunkJSON(req.Model, map[string]any{"tool_calls": out}, nil, nil))
+		sendChunk(map[string]any{"tool_calls": out}, nil, nil)
 	}
 
 	finish := "stop"
 	if len(reply.ToolCalls()) > 0 {
 		finish = "tool_calls"
 	}
-	sw.Event("", chunkJSON(req.Model, map[string]any{}, &finish, nil))
+	sendChunk(map[string]any{}, &finish, nil)
 
 	if includeUsage && reply.Usage != nil {
-		sw.Event("", chunkJSON(req.Model, nil, nil, usageMap(reply.Usage)))
+		sendChunk(nil, nil, usageMap(reply.Usage))
 	}
 	sw.Event("", "[DONE]")
 }
@@ -403,7 +407,7 @@ func buildCompletion(model string, reply *gateway.Reply) map[string]any {
 	return out
 }
 
-func chunkJSON(model string, delta map[string]any, finish *string, usage map[string]any) string {
+func chunkJSON(id string, created int64, model string, delta map[string]any, finish *string, usage map[string]any) string {
 	choice := map[string]any{"index": 0, "delta": delta}
 	if finish != nil {
 		choice["finish_reason"] = *finish
@@ -411,9 +415,9 @@ func chunkJSON(model string, delta map[string]any, finish *string, usage map[str
 		choice["finish_reason"] = nil
 	}
 	payload := map[string]any{
-		"id":      "chatcmpl-" + randomID(),
+		"id":      id,
 		"object":  "chat.completion.chunk",
-		"created": time.Now().Unix(),
+		"created": created,
 		"model":   model,
 	}
 	if delta == nil {
