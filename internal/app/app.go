@@ -104,6 +104,7 @@ func (a *App) GatewayHandler() http.Handler {
 func (a *App) AdminHandler() http.Handler {
 	srv := &admin.Server{
 		Store:          a.Store,
+		ResetSession:   a.Engine.ResetSession,
 		Cipher:         a.Cipher,
 		Monitor:        a.Monitor,
 		Cfg:            a.Cfg,

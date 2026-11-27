@@ -60,7 +60,7 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, nil, gateway.NewError(http.StatusBadRequest, "invalid_request_error", "Не удалось разобрать тело запроса: "+err.Error()))
 		return
 	}
-	principal, err := h.Auth.Resolve(r.Context(), gateway.FromBearer(r))
+	principal, err := h.Auth.Resolve(r.Context(), gateway.FromBearer(r), "responses")
 	if err != nil {
 		h.writeError(w, nil, err)
 		return
