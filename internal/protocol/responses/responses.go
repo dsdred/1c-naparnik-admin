@@ -89,7 +89,7 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 			h.writeError(w, principal, err)
 			return
 		}
-		h.logRequest(r, principal, req.Model, 200, "", reply, time.Since(started), false, gateway.LastUserText(turns))
+		h.logRequest(principal, req.Model, 200, "", reply, time.Since(started), false, gateway.LastUserText(turns))
 		httpx.JSON(w, http.StatusOK, buildResponse(respID, req.Model, created, responseOutput(reply, itemID), reply.Usage))
 		return
 	}
@@ -131,13 +131,13 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	reply, err := h.Engine.Execute(r.Context(), input)
 	if err != nil {
 		ge := gateway.FromError(err)
-		h.logRequest(r, principal, req.Model, ge.Status, ge.Code, nil, time.Since(started), true, gateway.LastUserText(turns))
+		h.logRequest(principal, req.Model, ge.Status, ge.Code, nil, time.Since(started), true, gateway.LastUserText(turns))
 		sw.Event("error", mustJSON(map[string]any{
 			"type": "error", "code": ge.Code, "message": ge.Message,
 		}))
 		return
 	}
-	h.logRequest(r, principal, req.Model, 200, "", reply, time.Since(started), true, gateway.LastUserText(turns))
+	h.logRequest(principal, req.Model, 200, "", reply, time.Since(started), true, gateway.LastUserText(turns))
 
 	// Финальный набор элементов вывода.
 	output := responseOutput(reply, itemID)
@@ -195,14 +195,14 @@ func (h *Handler) streamMode(p *gateway.Principal) string {
 func (h *Handler) writeError(w http.ResponseWriter, p *gateway.Principal, err error) {
 	ge := gateway.FromError(err)
 	if p != nil {
-		h.logRequest(nil, p, "", ge.Status, ge.Code, nil, 0, false, "")
+		h.logRequest(p, "", ge.Status, ge.Code, nil, 0, false, "")
 	}
 	httpx.JSON(w, ge.Status, map[string]any{
 		"error": map[string]any{"message": ge.Message, "type": ge.Code, "code": ge.Code},
 	})
 }
 
-func (h *Handler) logRequest(r *http.Request, p *gateway.Principal, model string, status int, errType string,
+func (h *Handler) logRequest(p *gateway.Principal, model string, status int, errType string,
 	reply *gateway.Reply, latency time.Duration, stream bool, prompt string) {
 	if p == nil {
 		return
@@ -217,13 +217,16 @@ func (h *Handler) logRequest(r *http.Request, p *gateway.Principal, model string
 		entry.CompTokens = reply.Usage.CompletionTokens
 		entry.CachedTokens = reply.Usage.CachedTokens
 	}
-	ctx := context.Background()
-	if r != nil {
-		ctx = r.Context()
-	}
-	if err := h.Store.LogRequest(ctx, entry); err != nil && h.Log != nil {
-		h.Log.Warn("не удалось записать журнал запроса", "err", err)
-	}
+	// Журнал не должен задерживать ответ: запись уходит после его отправки, в фоне
+	// и с ограниченным ожиданием блокировки SQLite. Иначе при занятой базе клиент
+	// с коротким таймаутом теряет ответ, который уже сгенерирован.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := h.Store.LogRequest(ctx, entry); err != nil && h.Log != nil {
+			h.Log.Warn("не удалось записать журнал запроса", "err", err)
+		}
+	}()
 }
 
 func normalize(req *responsesRequest) ([]gateway.Turn, []gateway.Tool, error) {

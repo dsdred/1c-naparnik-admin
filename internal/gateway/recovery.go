@@ -87,6 +87,31 @@ func recoveryPending(message string) *Error {
 	return NewError(http.StatusConflict, "recovery_pending", message)
 }
 
+// errPendingDelivered — внутренний сигнал: ответ на прерванный запрос уже доставлен
+// клиенту, а признак восстановления остался из-за сбоя записи. Такой признак надо
+// снять и продолжить обычную обработку, а не отвечать 409.
+var errPendingDelivered = errors.New("recovery already delivered")
+
+// clearPending снимает признак восстановления в фоне и с ограниченным ожиданием:
+// ответ уже у клиента, ждать освобождения SQLite на его пути нельзя.
+func (e *Engine) clearPending(sessionKey string, in Input, expected string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		ok, err := e.store.ClearPending(ctx, in.Token.ID, in.Protocol, sessionKey, expected)
+		if err != nil || !ok {
+			log := e.Log
+			if log == nil {
+				log = slog.Default()
+			}
+			if err != nil {
+				log.Warn("не удалось снять признак восстановления", "token_id", in.Token.ID,
+					"protocol", in.Protocol, "err", err)
+			}
+		}
+	}()
+}
+
 type recoveredTurn struct {
 	packets   []naparnik.Packet
 	prefix    []Part
@@ -102,6 +127,11 @@ func (e *Engine) recoverTurn(ctx context.Context, in Input, binding store.Sessio
 		return nil, recoveryPending("перед продолжением повторите прерванный запрос или сбросьте сессию")
 	}
 	tail := in.Turns[cut.Count:]
+	if len(tail) > 0 && cut.Remaining == 0 && tail[0].Role == RoleAssistant {
+		// В истории клиента уже есть ответ на прерванный запрос: значит восстановление
+		// отработало, а запись об очистке pending не прошла (база была занята).
+		return nil, errPendingDelivered
+	}
 	if len(tail) > 0 && (len(tail) != 1 || tail[0].Role != RoleUser || cut.Remaining != 0) {
 		return nil, recoveryPending("перед продолжением повторите прерванный запрос")
 	}

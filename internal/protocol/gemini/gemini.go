@@ -25,9 +25,18 @@ type Handler struct {
 	Cfg    config.Source
 	Log    *slog.Logger
 
-	// callIDs хранит соответствие «имя функции → id вызова» в рамках сессии:
-	// формат Gemini не передаёт идентификатор вызова инструмента.
+	// callIDs хранит соответствие «имя функции → id вызовов» в рамках сессии:
+	// формат Gemini не передаёт идентификатор вызова инструмента. Список нужен
+	// из-за параллельных вызовов одной функции: у них разные id, а имя одно,
+	// поэтому ответы сопоставляются по порядку поступления.
 	callIDs sync.Map
+}
+
+// callQueue — очередь id вызовов одной функции: ответы приходят в том же
+// порядке, в каком были объявлены вызовы.
+type callQueue struct {
+	mu  sync.Mutex
+	ids []string
 }
 
 type generateRequest struct {
@@ -100,7 +109,7 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.remember(principal.Token.ID, sessionID(r), reply)
-		h.logRequest(r, principal, model, 200, "", reply, time.Since(started), false, gateway.LastUserText(turns))
+		h.logRequest(principal, model, 200, "", reply, time.Since(started), false, gateway.LastUserText(turns))
 		httpx.JSON(w, http.StatusOK, h.buildResponse(model, reply))
 		return
 	}
@@ -126,12 +135,12 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 	reply, err := h.Engine.Execute(r.Context(), input)
 	if err != nil {
 		ge := gateway.FromError(err)
-		h.logRequest(r, principal, model, ge.Status, ge.Code, nil, time.Since(started), true, gateway.LastUserText(turns))
+		h.logRequest(principal, model, ge.Status, ge.Code, nil, time.Since(started), true, gateway.LastUserText(turns))
 		sw.Event("", mustJSON(geminiError(ge)))
 		return
 	}
 	h.remember(principal.Token.ID, sessionID(r), reply)
-	h.logRequest(r, principal, model, 200, "", reply, time.Since(started), true, gateway.LastUserText(turns))
+	h.logRequest(principal, model, 200, "", reply, time.Since(started), true, gateway.LastUserText(turns))
 
 	if streamMode != "deltas" {
 		if text := reply.Text(); text != "" {
@@ -212,7 +221,7 @@ func (h *Handler) normalize(tokenID int64, session string, req *generateRequest)
 							payload = v
 						}
 					}
-					callID := h.lookupCallID(tokenID, session, p.FunctionResponse.Name)
+					callID := h.takeCallID(tokenID, session, p.FunctionResponse.Name)
 					if callID == "" {
 						callID = p.FunctionResponse.Name
 					}
@@ -287,19 +296,41 @@ func (h *Handler) buildResponse(model string, reply *gateway.Reply) map[string]a
 }
 
 // remember запоминает id вызовов, чтобы сопоставить их с functionResponse.
+// Для параллельных вызовов одной функции сохраняется список: имя одно, а id разные.
 func (h *Handler) remember(tokenID int64, session string, reply *gateway.Reply) {
+	byName := map[string][]string{}
+	order := make([]string, 0, len(reply.ToolCalls()))
 	for _, c := range reply.ToolCalls() {
-		h.callIDs.Store(callKey(tokenID, session, c.Function.Name), c.ID)
+		name := c.Function.Name
+		if _, seen := byName[name]; !seen {
+			order = append(order, name)
+		}
+		byName[name] = append(byName[name], c.ID)
+	}
+	for _, name := range order {
+		h.callIDs.Store(callKey(tokenID, session, name), &callQueue{ids: byName[name]})
 	}
 }
 
-func (h *Handler) lookupCallID(tokenID int64, session, name string) string {
-	if v, ok := h.callIDs.Load(callKey(tokenID, session, name)); ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
+// takeCallID выдаёт очередной id вызова по имени функции. Порядок ответов
+// совпадает с порядком объявленных вызовов, поэтому очередь идёт по кругу:
+// когда ответов больше, чем id, возвращается последний известный.
+func (h *Handler) takeCallID(tokenID int64, session, name string) string {
+	v, ok := h.callIDs.Load(callKey(tokenID, session, name))
+	if !ok {
+		return ""
 	}
-	return ""
+	q, ok := v.(*callQueue)
+	if !ok || len(q.ids) == 0 {
+		return ""
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	id := q.ids[0]
+	if len(q.ids) > 1 {
+		q.ids = q.ids[1:]
+	}
+	return id
 }
 
 func callKey(tokenID int64, session, name string) string {
@@ -373,7 +404,7 @@ func parsePath(path string) (model string, stream bool, ok bool) {
 func (h *Handler) writeError(w http.ResponseWriter, p *gateway.Principal, err error) {
 	ge := gateway.FromError(err)
 	if p != nil {
-		h.logRequest(nil, p, "", ge.Status, ge.Code, nil, 0, false, "")
+		h.logRequest(p, "", ge.Status, ge.Code, nil, 0, false, "")
 	}
 	httpx.JSON(w, ge.Status, geminiError(ge))
 }
@@ -397,7 +428,7 @@ func geminiError(ge *gateway.Error) map[string]any {
 	return map[string]any{"error": map[string]any{"code": ge.Status, "message": ge.Message, "status": status}}
 }
 
-func (h *Handler) logRequest(r *http.Request, p *gateway.Principal, model string, status int, errType string,
+func (h *Handler) logRequest(p *gateway.Principal, model string, status int, errType string,
 	reply *gateway.Reply, latency time.Duration, stream bool, prompt string) {
 	if p == nil {
 		return
@@ -412,13 +443,16 @@ func (h *Handler) logRequest(r *http.Request, p *gateway.Principal, model string
 		entry.CompTokens = reply.Usage.CompletionTokens
 		entry.CachedTokens = reply.Usage.CachedTokens
 	}
-	ctx := context.Background()
-	if r != nil {
-		ctx = r.Context()
-	}
-	if err := h.Store.LogRequest(ctx, entry); err != nil && h.Log != nil {
-		h.Log.Warn("не удалось записать журнал запроса", "err", err)
-	}
+	// Журнал не должен задерживать ответ: запись уходит после его отправки, в фоне
+	// и с ограниченным ожиданием блокировки SQLite. Иначе при занятой базе клиент
+	// с коротким таймаутом теряет ответ, который уже сгенерирован.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := h.Store.LogRequest(ctx, entry); err != nil && h.Log != nil {
+			h.Log.Warn("не удалось записать журнал запроса", "err", err)
+		}
+	}()
 }
 
 func mustJSON(v any) string {

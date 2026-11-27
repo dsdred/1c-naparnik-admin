@@ -514,6 +514,19 @@ func (s *Store) SaveSession(ctx context.Context, ss Session) error {
 	return err
 }
 
+// ClearPending снимает признак восстановления, только если в строке всё ещё
+// лежит ожидаемое значение. Отложенная очистка так не затрёт более новую привязку.
+func (s *Store) ClearPending(ctx context.Context, tokenID int64, protocol, sessionID, expected string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET pending_json='' WHERE token_id=? AND protocol=? AND session_id=? AND pending_json=?`,
+		tokenID, protocol, sessionID, expected)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 // DeleteSession удаляет привязку и контрольные точки одной транзакцией.
 func (s *Store) DeleteSession(ctx context.Context, tokenID int64, protocol, sessionID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)

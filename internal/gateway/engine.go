@@ -253,6 +253,9 @@ func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string,
 	binding, err := e.store.GetSession(ctx, in.Token.ID, in.Protocol, sessionKey)
 	expired := err == nil && cfg.SessionTTL.D() > 0 && timeSince(binding.UpdatedAt) > cfg.SessionTTL.D()
 	hasBinding := err == nil && !expired && binding.Conversation != ""
+	// Признак восстановления до очистки: если запись в конце не пройдёт,
+	// по нему погасим его отдельно.
+	oldPending := binding.PendingJSON
 	if expired {
 		if err := e.store.DeleteSession(ctx, in.Token.ID, in.Protocol, sessionKey); err != nil {
 			return nil, err
@@ -261,6 +264,15 @@ func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string,
 	var recovered *recoveredTurn
 	if hasBinding && !forceNew && binding.PendingJSON != "" {
 		recovered, err = e.recoverTurn(ctx, in, binding)
+		if errors.Is(err, errPendingDelivered) {
+			// Ответ на прерванный запрос уже ушёл клиенту, а признак восстановления
+			// остался из-за сбоя записи. Снимаем его и продолжаем обычную обработку,
+			// иначе следующая реплика получала бы 409 бесконечно.
+			e.clearPending(sessionKey, in, binding.PendingJSON)
+			binding.PendingJSON = ""
+			err = nil
+			recovered = nil
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -573,6 +585,12 @@ func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string,
 	if err := e.store.SaveSession(ctx, binding); err != nil {
 		log.Warn("не удалось сохранить сессию; готовый ответ возвращён клиенту",
 			"token_id", in.Token.ID, "protocol", in.Protocol, "conversation", conversation, "err", err)
+		// Привязка не записалась — значит и признак восстановления не снялся.
+		// Гасим его отдельной записью в фоне: ответ уже у клиента, и следующий
+		// запрос не должен упираться в recovery_pending после снятия блокировки.
+		if recovered != nil && oldPending != "" {
+			e.clearPending(sessionKey, in, oldPending)
+		}
 		return reply, nil
 	}
 
