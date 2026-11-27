@@ -72,7 +72,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, nil, gateway.NewError(http.StatusBadRequest, "invalid_json", "Не удалось разобрать тело запроса: "+err.Error()))
 		return
 	}
-	principal, err := h.Auth.Resolve(r.Context(), gateway.FromBearer(r))
+	principal, err := h.Auth.Resolve(r.Context(), gateway.FromBearer(r), "openai")
 	if err != nil {
 		h.writeError(w, nil, err)
 		return
@@ -192,7 +192,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 // Models обрабатывает GET /v1/models.
 func (h *Handler) Models(w http.ResponseWriter, r *http.Request) {
-	if _, err := h.Auth.Resolve(r.Context(), gateway.FromBearer(r)); err != nil {
+	if _, err := h.Auth.Resolve(r.Context(), gateway.FromBearer(r), "openai", "responses"); err != nil {
 		h.writeError(w, nil, err)
 		return
 	}

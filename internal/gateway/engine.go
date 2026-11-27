@@ -136,7 +136,7 @@ type Engine struct {
 // keyLock — мьютекс сессии со счётчиком ожидающих. Когда очередь пуста,
 // запись удаляется из карты: иначе на каждый новый чат оставался бы замок навсегда.
 type keyLock struct {
-	mu   sync.Mutex
+	slot chan struct{}
 	refs int
 }
 
@@ -151,26 +151,20 @@ func New(client *naparnik.Client, st *store.Store, cfg *config.Config) *Engine {
 // lockSession ставит запрос в очередь его сессии и возвращает функцию разблокировки.
 // Ожидающие учитываются в refs до того, как встают в очередь, поэтому замок
 // не удаляется, пока за ним кто-то стоит.
-func (e *Engine) lockSession(key string, onWait func()) func() {
+func (e *Engine) lockSession(ctx context.Context, key string, onWait func()) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	e.mu.Lock()
 	l, ok := e.locks[key]
 	if !ok {
-		l = &keyLock{}
+		l = &keyLock{slot: make(chan struct{}, 1)}
 		e.locks[key] = l
 	}
 	l.refs++
 	e.mu.Unlock()
 
-	if !l.mu.TryLock() {
-		// Сессия занята: второй запрос ждёт, но клиенту нужно об этом сказать —
-		// иначе он видит молчащее соединение и обрывает его по своему таймауту.
-		if onWait != nil {
-			onWait()
-		}
-		l.mu.Lock()
-	}
-	return func() {
-		l.mu.Unlock()
+	releaseRef := func() {
 		e.mu.Lock()
 		l.refs--
 		if l.refs == 0 {
@@ -178,6 +172,42 @@ func (e *Engine) lockSession(key string, onWait func()) func() {
 		}
 		e.mu.Unlock()
 	}
+	select {
+	case l.slot <- struct{}{}:
+	default:
+		if onWait != nil {
+			onWait()
+		}
+		select {
+		case l.slot <- struct{}{}:
+		case <-ctx.Done():
+			releaseRef()
+			return nil, ctx.Err()
+		}
+	}
+	unlock := func() {
+		<-l.slot
+		releaseRef()
+	}
+	if err := ctx.Err(); err != nil {
+		unlock()
+		return nil, err
+	}
+	return unlock, nil
+}
+
+func sessionLockKey(tokenID int64, protocol, sessionID string) string {
+	return fmt.Sprintf("%d:%s:%s", tokenID, protocol, sessionID)
+}
+
+// ResetSession ждёт завершения текущей генерации и удаляет её привязку.
+func (e *Engine) ResetSession(ctx context.Context, tokenID int64, protocol, sessionID string) error {
+	unlock, err := e.lockSession(ctx, sessionLockKey(tokenID, protocol, sessionID), nil)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return e.store.DeleteSession(ctx, tokenID, protocol, sessionID)
 }
 
 // Execute прогоняет запрос через Напарника и возвращает собранный ответ.
@@ -191,13 +221,11 @@ func (e *Engine) Execute(ctx context.Context, in Input) (*Reply, error) {
 
 	sessionKey, sticky := resolveSessionKey(in.SessionID, in.Turns)
 
-	unlock := e.lockSession(fmt.Sprintf("%d:%s:%s", in.Token.ID, in.Protocol, sessionKey), in.OnQueued)
-	defer unlock()
-
-	if err := ctx.Err(); err != nil {
-		// Пока стояли в очереди, клиент ушёл: не тратим лимит на заведомо мёртвый запрос.
-		return nil, &Error{Status: 499, Code: "client_closed", Message: "клиент закрыл соединение, пока запрос ждал очереди"}
+	unlock, err := e.lockSession(ctx, sessionLockKey(in.Token.ID, in.Protocol, sessionKey), in.OnQueued)
+	if err != nil {
+		return nil, err
 	}
+	defer unlock()
 
 	reply, err := e.executeLocked(ctx, in, sessionKey, sticky, false)
 	if err == nil || !conversationGone(err) || (reply != nil && len(reply.Parts) > 0) {
@@ -206,8 +234,9 @@ func (e *Engine) Execute(ctx context.Context, in Input) (*Reply, error) {
 	// Напарник не нашёл диалог: он удалён на сервере или создан другим ключом.
 	// Оставлять такую привязку нельзя — сессия клиента становится вечно «сломанной»,
 	// поэтому забываем её и один раз повторяем запрос в новом диалоге с полной историей.
-	_ = e.store.DeleteSession(ctx, in.Token.ID, in.Protocol, sessionKey)
-	_ = e.store.DeleteCheckpoints(ctx, in.Token.ID, in.Protocol, sessionKey)
+	if deleteErr := e.store.DeleteSession(ctx, in.Token.ID, in.Protocol, sessionKey); deleteErr != nil {
+		return reply, err
+	}
 	return e.executeLocked(ctx, in, sessionKey, sticky, true)
 }
 
@@ -216,6 +245,11 @@ func (e *Engine) Execute(ctx context.Context, in Input) (*Reply, error) {
 func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string, sticky, forceNew bool) (*Reply, error) {
 	binding, err := e.store.GetSession(ctx, in.Token.ID, in.Protocol, sessionKey)
 	expired := err == nil && e.cfg.SessionTTL.D() > 0 && timeSince(binding.UpdatedAt) > e.cfg.SessionTTL.D()
+	if expired {
+		if err := e.store.DeleteSession(ctx, in.Token.ID, in.Protocol, sessionKey); err != nil {
+			return nil, err
+		}
+	}
 	hasBinding := err == nil && !expired && binding.Conversation != ""
 
 	// Ищем в присланной истории последнюю реплику ассистента и её контрольную точку:
@@ -224,7 +258,7 @@ func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string,
 	anchorFP, anchorIdx := anchorOf(in.Turns)
 	var anchor store.Checkpoint
 	haveAnchor := false
-	if anchorFP != "" {
+	if hasBinding && !forceNew && anchorFP != "" {
 		if cp, ok, cerr := e.store.FindCheckpoint(ctx, in.Token.ID, in.Protocol, sessionKey, anchorFP); cerr == nil && ok {
 			anchor, haveAnchor = cp, true
 		}
@@ -413,6 +447,9 @@ func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string,
 			}
 		})
 		if err != nil {
+			if len(reply.Parts) > 0 {
+				return reply, err
+			}
 			return nil, err
 		}
 		if uuid != "" {
@@ -457,6 +494,9 @@ func (e *Engine) executeLocked(ctx context.Context, in Input, sessionKey string,
 		})
 	}
 
+	if newConversation {
+		binding.ToolsJSON = ""
+	}
 	if len(toolMap) > 0 {
 		if data, err := json.Marshal(toolMap); err == nil {
 			binding.ToolsJSON = string(data)

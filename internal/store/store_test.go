@@ -315,3 +315,32 @@ func TestCheckpointRoundTrip(t *testing.T) {
 		t.Fatalf("точки должны быть удалены, осталось %d", n)
 	}
 }
+
+func TestPurgeSessionsRemovesOnlyStaleCheckpoints(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	keyID, err := st.CreateKey(ctx, "test", "test", []byte{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenID, err := st.CreateToken(ctx, Token{KeyID: keyID, Name: "test"}, "hash", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveSession(ctx, Session{TokenID: tokenID, Protocol: "openai", SessionID: "active", Conversation: "dialog"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, sessionID := range []string{"active", "orphan"} {
+		if err := st.SaveCheckpoint(ctx, Checkpoint{TokenID: tokenID, Protocol: "openai", SessionID: sessionID, Fingerprint: "reply", Conversation: "dialog"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.PurgeSessions(ctx, time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	for sessionID, want := range map[string]int{"active": 1, "orphan": 0} {
+		if count, err := st.CountCheckpoints(ctx, tokenID, "openai", sessionID); err != nil || count != want {
+			t.Fatalf("%s checkpoints=%d, want %d: %v", sessionID, count, want, err)
+		}
+	}
+}

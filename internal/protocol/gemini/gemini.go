@@ -76,7 +76,7 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, nil, gateway.NewError(http.StatusBadRequest, "INVALID_ARGUMENT", "Не удалось разобрать тело запроса: "+err.Error()))
 		return
 	}
-	principal, err := h.Auth.Resolve(r.Context(), gateway.FromGemini(r))
+	principal, err := h.Auth.Resolve(r.Context(), gateway.FromGemini(r), "gemini")
 	if err != nil {
 		h.writeError(w, nil, err)
 		return

@@ -30,6 +30,7 @@ type Server struct {
 	Log            *slog.Logger
 	Auth           *Auth
 	ApplyListeners func([]config.Listener) error
+	ResetSession   func(context.Context, int64, string, string) error
 }
 
 // Handler собирает маршруты админки.
@@ -646,7 +647,11 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "Нужны token_id, protocol и session_id"})
 		return
 	}
-	if err := s.Store.DeleteSession(r.Context(), tokenID, protocol, sessionID); err != nil {
+	reset := s.ResetSession
+	if reset == nil {
+		reset = s.Store.DeleteSession
+	}
+	if err := reset(r.Context(), tokenID, protocol, sessionID); err != nil {
 		s.fail(w, err)
 		return
 	}

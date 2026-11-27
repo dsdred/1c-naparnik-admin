@@ -109,6 +109,7 @@ func (a *App) AdminHandler() http.Handler {
 		Log:            a.Log,
 		Auth:           a.Auth,
 		ApplyListeners: a.ApplyListeners,
+		ResetSession:   a.Engine.ResetSession,
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/api/", srv.Handler())

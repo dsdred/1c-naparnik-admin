@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -153,7 +154,11 @@ func TestLockSessionSerializesAndCleansUp(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			unlock := e.lockSession("k", nil)
+			unlock, err := e.lockSession(context.Background(), "k", nil)
+			if err != nil {
+				t.Error(err)
+				return
+			}
 			defer unlock()
 			n := atomic.AddInt32(&inside, 1)
 			for {
@@ -177,14 +182,21 @@ func TestLockSessionSerializesAndCleansUp(t *testing.T) {
 
 func TestLockSessionNotifiesWaiter(t *testing.T) {
 	e := &Engine{locks: map[string]*keyLock{}}
-	first := e.lockSession("k", nil)
+	first, err := e.lockSession(context.Background(), "k", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	waited := make(chan struct{}, 1)
 	done := make(chan struct{})
 	go func() {
-		unlock := e.lockSession("k", func() { waited <- struct{}{} })
+		defer close(done)
+		unlock, err := e.lockSession(context.Background(), "k", func() { waited <- struct{}{} })
+		if err != nil {
+			t.Error(err)
+			return
+		}
 		unlock()
-		close(done)
 	}()
 
 	select {
@@ -199,6 +211,45 @@ func TestLockSessionNotifiesWaiter(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("второй запрос не дождался освобождения")
+	}
+}
+
+func TestLockSessionCancelsQueuedRequest(t *testing.T) {
+	e := &Engine{locks: map[string]*keyLock{}}
+	unlock, err := e.lockSession(context.Background(), "session", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	waiting := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		release, err := e.lockSession(ctx, "session", func() { close(waiting) })
+		if release != nil {
+			release()
+		}
+		result <- err
+	}()
+	select {
+	case <-waiting:
+	case <-time.After(2 * time.Second):
+		t.Fatal("request did not enter the session queue")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiting for lock: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("canceled request stayed in the session queue")
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.locks["session"].refs != 1 {
+		t.Fatal("canceled request still holds a session reference")
 	}
 }
 
