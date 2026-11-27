@@ -118,7 +118,7 @@ func TestBuildCompletionReasoning(t *testing.T) {
 
 func TestChunkJSONHasRole(t *testing.T) {
 	// Первый чанк потока обязан нести роль: клиенты строят по нему сообщение.
-	out := chunkJSON("naparnik", map[string]any{"role": "assistant", "content": ""}, nil, nil)
+	out := chunkJSON("chatcmpl-test", 123, "naparnik", map[string]any{"role": "assistant", "content": ""}, nil, nil)
 	if !strings.Contains(out, `"role":"assistant"`) {
 		t.Fatalf("в чанке нет роли: %s", out)
 	}

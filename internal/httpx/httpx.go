@@ -15,20 +15,28 @@ import (
 type Writer struct {
 	w       http.ResponseWriter
 	flusher http.Flusher
-	once    sync.Once
+	mu      sync.Mutex
 	started bool
+	closed  bool
 	stop    chan struct{}
+	done    chan struct{}
 }
 
 // NewWriter создаёт писатель потока.
 func NewWriter(w http.ResponseWriter) *Writer {
 	f, _ := w.(http.Flusher)
-	return &Writer{w: w, flusher: f, stop: make(chan struct{})}
+	return &Writer{w: w, flusher: f, stop: make(chan struct{}), done: make(chan struct{})}
 }
 
 // Start принудительно открывает поток (нужно, когда ждём долгий серверный вызов).
 func (s *Writer) Start() {
-	s.once.Do(func() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.start()
+}
+
+func (s *Writer) start() {
+	if !s.started && !s.closed {
 		h := s.w.Header()
 		h.Set("Content-Type", "text/event-stream; charset=utf-8")
 		h.Set("Cache-Control", "no-cache")
@@ -40,20 +48,18 @@ func (s *Writer) Start() {
 			s.flusher.Flush()
 		}
 		go s.ping()
-	})
+	}
 }
 
 func (s *Writer) ping() {
+	defer close(s.done)
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			if _, err := s.w.Write([]byte(": ping\n\n")); err != nil {
+			if !s.writePing() {
 				return
-			}
-			if s.flusher != nil {
-				s.flusher.Flush()
 			}
 		case <-s.stop:
 			return
@@ -61,12 +67,36 @@ func (s *Writer) ping() {
 	}
 }
 
+func (s *Writer) writePing() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	if _, err := s.w.Write([]byte(": ping\n\n")); err != nil {
+		return false
+	}
+	if s.flusher != nil {
+		s.flusher.Flush()
+	}
+	return true
+}
+
 // Started сообщает, были ли уже отправлены заголовки.
-func (s *Writer) Started() bool { return s.started }
+func (s *Writer) Started() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.started
+}
 
 // Event пишет событие: имя (опционально) и данные.
 func (s *Writer) Event(name, data string) {
-	s.Start()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.start()
 	if name != "" {
 		_, _ = s.w.Write([]byte("event: " + name + "\n"))
 	}
@@ -78,7 +108,12 @@ func (s *Writer) Event(name, data string) {
 
 // Raw пишет уже готовый блок (например, ": ping\n\n").
 func (s *Writer) Raw(data string) {
-	s.Start()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.start()
 	_, _ = s.w.Write([]byte(data))
 	if s.flusher != nil {
 		s.flusher.Flush()
@@ -87,10 +122,15 @@ func (s *Writer) Raw(data string) {
 
 // Close останавливает пинги.
 func (s *Writer) Close() {
-	select {
-	case <-s.stop:
-	default:
+	s.mu.Lock()
+	if !s.closed {
+		s.closed = true
 		close(s.stop)
+	}
+	started := s.started
+	s.mu.Unlock()
+	if started {
+		<-s.done
 	}
 }
 
