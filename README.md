@@ -76,11 +76,11 @@ listeners:
 
 ### Подключение IDE
 
-**Проверено реальным подключением:** Cline, Zed, Qoder, OpenCode, ZCode, проверка через curl.
+**Проверено реальным подключением:** Cline, Zed, Qoder, OpenCode, ZCode, Claude Code, Codex CLI, проверка через curl.
 
 Живые проверки шли через `http://aids:47833/v1` (сетевой адрес стенда): `/v1/models`, стрим, многоходовый диалог, вызов клиентского инструмента и продолжение после его результата, rewind истории.
 
-**Ещё не проверено** (инструкции рабочие, но подключение в этих клиентах не подтверждалось): Roo Code / Kilo Code, Continue (VS Code, JetBrains), JetBrains AI Assistant, Codex CLI, Gemini CLI.
+**Ещё не проверено** (инструкции рабочие, но подключение в этих клиентах не подтверждалось): Roo Code / Kilo Code, Continue (VS Code, JetBrains), JetBrains AI Assistant, Gemini CLI.
 
 Точные настройки для каждого клиента собирает мастер в разделе «Подключение» админки — там же актуальные адрес шлюза и значение токена. Ниже — те же варианты текстом.
 
@@ -111,6 +111,34 @@ claude --model naparnik
 ```
 
 Потоковый текстовый ответ проверен в Claude Code 2.1.332 через Windows x64 `1.2.1-rc.2` (`790f1bc`) с реальным API 1С:Напарника.
+
+**Codex CLI** (проверено с Codex CLI 0.128.0 на Windows). Нужен токен **без ограничения протокола или с OpenAI Responses** — токен, ограниченный Chat Completions, вернёт `403 protocol_not_allowed`. Codex для пользовательских провайдеров ходит в Responses API, поэтому `wire_api = "responses"`.
+
+Добавьте провайдера в `%USERPROFILE%\.codex\config.toml`:
+
+```toml
+model = "naparnik"
+model_provider = "naparnik"
+
+[model_providers.naparnik]
+name = "Naparnik"
+base_url = "http://127.0.0.1:47831/v1"
+env_key = "NAPARNIK_API_KEY"
+wire_api = "responses"
+```
+
+Токен вводится в текущем окне PowerShell (ввод скрыт, в новом окне его нужно ввести снова):
+
+```powershell
+$token = Read-Host 'Токен Напарника' -AsSecureString
+$env:NAPARNIK_API_KEY = [System.Net.NetworkCredential]::new('', $token).Password
+codex -m naparnik -c 'model_provider="naparnik"'
+```
+
+Если в `config.toml` стоит `service_tier = "default"` и CLI ругается `unknown variant default`, добавьте флаг `-c 'service_tier="flex"'`. В заголовке Codex появится `model: naparnik` — значит подключение работает.
+
+- `Missing environment variable: NAPARNIK_API_KEY` — токен не попал в это окно: запустите `Read-Host` и Codex в одном терминале.
+- `Model metadata for naparnik not found` — CLI использует запасные метаданные; если модель отвечает, работать можно.
 
 **Gemini CLI**:
 

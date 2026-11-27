@@ -1763,15 +1763,24 @@ claude`,
     proto: 'responses',
     name: 'Codex CLI',
     note: '~/.codex/config.toml',
-    verified: false,
-    text: (c) => `model = "${c.model}"
+    verified: true,
+    // Codex CLI для своих провайдеров ходит в Responses API: wire_api = "responses".
+    // Токен нужен без ограничения протокола или с OpenAI Responses — токен,
+    // ограниченный Chat Completions, вернёт 403 protocol_not_allowed.
+    text: (c) => `# ~/.codex/config.toml
+model = "${c.model}"
 model_provider = "naparnik"
 
 [model_providers.naparnik]
 name = "Naparnik"
 base_url = "${c.openai_url}"
 env_key = "NAPARNIK_API_KEY"
-wire_api = "chat"`,
+wire_api = "responses"
+
+# PowerShell: токен живёт только в этом окне
+$token = Read-Host 'Токен Напарника' -AsSecureString
+$env:NAPARNIK_API_KEY = [System.Net.NetworkCredential]::new('', $token).Password
+codex -m ${c.model} -c 'model_provider="naparnik"'`,
   },
   {
     id: 'gemini',
