@@ -22,7 +22,7 @@ type Handler struct {
 	Auth   *gateway.Auth
 	Engine *gateway.Engine
 	Store  *store.Store
-	Cfg    *config.Config
+	Cfg    config.Source
 	Log    *slog.Logger
 
 	// callIDs хранит соответствие «имя функции → id вызова» в рамках сессии:
@@ -108,7 +108,8 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 	sw := httpx.NewWriter(w)
 	defer sw.Close()
 
-	if h.streamMode(principal) == "deltas" {
+	streamMode := h.streamMode(principal)
+	if streamMode == "deltas" {
 		input.OnText = func(text string) {
 			sw.Event("", mustJSON(map[string]any{
 				"candidates": []any{map[string]any{
@@ -132,7 +133,7 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 	h.remember(principal.Token.ID, sessionID(r), reply)
 	h.logRequest(r, principal, model, 200, "", reply, time.Since(started), true, gateway.LastUserText(turns))
 
-	if h.streamMode(principal) != "deltas" {
+	if streamMode != "deltas" {
 		if text := reply.Text(); text != "" {
 			sw.Event("", mustJSON(map[string]any{
 				"candidates": []any{map[string]any{
@@ -178,7 +179,7 @@ func (h *Handler) streamMode(p *gateway.Principal) string {
 	if p.Token.StreamMode == "deltas" || p.Token.StreamMode == "final" {
 		return p.Token.StreamMode
 	}
-	return h.Cfg.StreamMode
+	return h.Cfg.Snapshot().StreamMode
 }
 
 // normalize переводит запрос Gemini во внутреннее представление.

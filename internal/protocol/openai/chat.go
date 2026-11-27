@@ -23,7 +23,7 @@ type Handler struct {
 	Auth   *gateway.Auth
 	Engine *gateway.Engine
 	Store  *store.Store
-	Cfg    *config.Config
+	Cfg    config.Source
 	Log    *slog.Logger
 }
 
@@ -197,7 +197,7 @@ func (h *Handler) Models(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	model := map[string]any{
-		"id":       h.Cfg.ModelName(),
+		"id":       h.Cfg.Snapshot().ModelName(),
 		"object":   "model",
 		"created":  0,
 		"owned_by": "naparnik-admin",
@@ -212,7 +212,7 @@ func (h *Handler) streamMode(p *gateway.Principal) string {
 	if p.Token.StreamMode == "deltas" || p.Token.StreamMode == "final" {
 		return p.Token.StreamMode
 	}
-	return h.Cfg.StreamMode
+	return h.Cfg.Snapshot().StreamMode
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, p *gateway.Principal, err error) {
@@ -457,7 +457,7 @@ func (h *Handler) modelName(model string) string {
 	if strings.TrimSpace(model) != "" {
 		return model
 	}
-	return h.Cfg.ModelName()
+	return h.Cfg.Snapshot().ModelName()
 }
 
 // randomID возвращает короткий случайный идентификатор для полей id ответов.

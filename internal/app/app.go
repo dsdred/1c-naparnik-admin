@@ -3,11 +3,8 @@ package app
 
 import (
 	"context"
-	"crypto/tls"
-	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -29,7 +26,7 @@ import (
 
 // App — собранный сервис.
 type App struct {
-	Cfg     *config.Config
+	Cfg     *config.Runtime
 	Store   *store.Store
 	Cipher  *secrets.Cipher
 	Engine  *gateway.Engine
@@ -38,7 +35,9 @@ type App struct {
 	Log     *slog.Logger
 
 	mu      sync.Mutex
-	servers map[string]*http.Server
+	servers map[string]*listener
+	retired map[*http.Server]struct{}
+	closed  bool
 }
 
 // New создаёт приложение и открывает хранилище.
@@ -58,15 +57,17 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 		return nil, err
 	}
 	client := naparnik.New(cfg.UpstreamBase, cfg.RequestTimeout.D())
+	runtime := config.NewRuntime(cfg)
 	a := &App{
-		Cfg:     cfg,
+		Cfg:     runtime,
 		Store:   st,
 		Cipher:  cipher,
-		Engine:  gateway.New(client, st, cfg),
-		Monitor: monitor.New(st, client, cipher, cfg, log),
+		Engine:  gateway.New(client, st, runtime),
+		Monitor: monitor.New(st, client, cipher, runtime, log),
 		Auth:    admin.NewAuth(st, masterKey),
 		Log:     log,
-		servers: map[string]*http.Server{},
+		servers: map[string]*listener{},
+		retired: map[*http.Server]struct{}{},
 	}
 	return a, nil
 }
@@ -108,7 +109,7 @@ func (a *App) AdminHandler() http.Handler {
 		Cfg:            a.Cfg,
 		Log:            a.Log,
 		Auth:           a.Auth,
-		ApplyListeners: a.ApplyListeners,
+		ApplyListeners: a.applyListeners,
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/api/", srv.Handler())
@@ -119,148 +120,12 @@ func (a *App) AdminHandler() http.Handler {
 // Start запускает все слушатели и фоновый опрос бюджета.
 func (a *App) Start(ctx context.Context) error {
 	a.Monitor.Start(ctx)
+	cfg := a.Cfg.Snapshot()
 	// Чистим давно неиспользуемые привязки сессий.
-	if err := a.Store.PurgeSessions(ctx, time.Now().Add(-2*a.Cfg.SessionTTL.D())); err != nil {
+	if err := a.Store.PurgeSessions(ctx, time.Now().Add(-2*cfg.SessionTTL.D())); err != nil {
 		a.Log.Warn("не удалось почистить старые сессии", "err", err)
 	}
-	for _, l := range a.Cfg.Listeners {
-		if l.Disabled {
-			a.Log.Info("слушатель выключен", "addr", l.Addr, "kind", l.Kind)
-			continue
-		}
-		if err := a.startListener(l); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// listenerKey — идентичность слушателя. Пути к сертификату входят в ключ:
-// если их поменяли в админке, слушатель пересоздаётся и подхватывает новый
-// сертификат, а не работает со старым до перезапуска процесса.
-func listenerKey(l config.Listener) string {
-	return l.Kind + "|" + l.Addr + "|" + l.CertFile + "|" + l.KeyFile
-}
-
-func (a *App) startListener(l config.Listener) error {
-	if l.Disabled {
-		return nil
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	key := listenerKey(l)
-	if _, ok := a.servers[key]; ok {
-		return nil
-	}
-	var handler http.Handler
-	switch l.Kind {
-	case config.KindAdmin:
-		handler = a.AdminHandler()
-		if !config.IsLoopback(l.Addr) {
-			a.Log.Warn("админка слушает не loopback-адрес — доступна по сети", "addr", l.Addr)
-		}
-	default:
-		handler = a.GatewayHandler()
-	}
-	srv := &http.Server{
-		Addr:              l.Addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 15 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
-	// Пару грузим до открытия порта: битый или отсутствующий сертификат должен
-	// вернуться вызывающему сразу, а не уронить слушатель в горутине.
-	useTLS := l.CertFile != "" && l.KeyFile != ""
-	if useTLS {
-		pair, err := tls.LoadX509KeyPair(l.CertFile, l.KeyFile)
-		if err != nil {
-			return fmt.Errorf("слушатель %s: сертификат: %w", l.Addr, err)
-		}
-		srv.TLSConfig = &tls.Config{
-			MinVersion:   tls.VersionTLS12,
-			Certificates: []tls.Certificate{pair},
-		}
-	}
-	ln, err := net.Listen("tcp", l.Addr)
-	if err != nil {
-		return fmt.Errorf("слушатель %s: %w", l.Addr, err)
-	}
-	a.servers[key] = srv
-	a.Log.Info("слушатель запущен", "addr", l.Addr, "kind", l.Kind, "tls", useTLS)
-	go func() {
-		var err error
-		if useTLS {
-			err = srv.ServeTLS(ln, "", "")
-		} else {
-			err = srv.Serve(ln)
-		}
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			a.Log.Error("слушатель остановился", "addr", l.Addr, "err", err)
-		}
-	}()
-	return nil
-}
-
-// ApplyListeners приводит набор слушателей к желаемому без перезапуска процесса.
-func (a *App) ApplyListeners(list []config.Listener) error {
-	// Проверяем сертификаты до остановки работающих слушателей: иначе опечатка
-	// в пути оставила бы сервис без уже поднятых портов.
-	for _, l := range list {
-		if l.Disabled || l.CertFile == "" && l.KeyFile == "" {
-			continue
-		}
-		if l.CertFile == "" || l.KeyFile == "" {
-			return fmt.Errorf("слушатель %s: нужны оба файла — сертификат и ключ", l.Addr)
-		}
-		if _, err := tls.LoadX509KeyPair(l.CertFile, l.KeyFile); err != nil {
-			return fmt.Errorf("слушатель %s: сертификат: %w", l.Addr, err)
-		}
-	}
-	desired := map[string]config.Listener{}
-	for _, l := range list {
-		if l.Disabled {
-			continue
-		}
-		desired[listenerKey(l)] = l
-	}
-
-	a.mu.Lock()
-	var toStop []*http.Server
-	for key, srv := range a.servers {
-		if _, ok := desired[key]; !ok {
-			toStop = append(toStop, srv)
-			delete(a.servers, key)
-		}
-	}
-	a.mu.Unlock()
-
-	for _, srv := range toStop {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = srv.Shutdown(ctx)
-		cancel()
-		a.Log.Info("слушатель остановлен", "addr", srv.Addr)
-	}
-
-	for _, l := range list {
-		if err := a.startListener(l); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// Shutdown корректно останавливает все слушатели.
-func (a *App) Shutdown(ctx context.Context) {
-	a.mu.Lock()
-	servers := make([]*http.Server, 0, len(a.servers))
-	for _, srv := range a.servers {
-		servers = append(servers, srv)
-	}
-	a.servers = map[string]*http.Server{}
-	a.mu.Unlock()
-	for _, srv := range servers {
-		_ = srv.Shutdown(ctx)
-	}
+	return a.ApplyListeners(cfg.Listeners)
 }
 
 // withLogging пишет в лог каждый запрос шлюза.

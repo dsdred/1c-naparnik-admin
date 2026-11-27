@@ -23,7 +23,7 @@ type Handler struct {
 	Auth   *gateway.Auth
 	Engine *gateway.Engine
 	Store  *store.Store
-	Cfg    *config.Config
+	Cfg    config.Source
 	Log    *slog.Logger
 }
 
@@ -203,7 +203,7 @@ func (h *Handler) streamMode(p *gateway.Principal) string {
 	if p.Token.StreamMode == "deltas" || p.Token.StreamMode == "final" {
 		return p.Token.StreamMode
 	}
-	return h.Cfg.StreamMode
+	return h.Cfg.Snapshot().StreamMode
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, p *gateway.Principal, err error) {
@@ -369,7 +369,7 @@ func (h *Handler) modelName(model string) string {
 	if strings.TrimSpace(model) != "" {
 		return model
 	}
-	return h.Cfg.ModelName()
+	return h.Cfg.Snapshot().ModelName()
 }
 
 func sessionID(r *http.Request) string {

@@ -26,10 +26,10 @@ type Server struct {
 	Store          *store.Store
 	Cipher         *secrets.Cipher
 	Monitor        *monitor.Poller
-	Cfg            *config.Config
+	Cfg            *config.Runtime
 	Log            *slog.Logger
 	Auth           *Auth
-	ApplyListeners func([]config.Listener) error
+	ApplyListeners func([]config.Listener, func() error) error
 }
 
 // Handler собирает маршруты админки.
@@ -769,7 +769,7 @@ func (s *Server) exportLogs(w http.ResponseWriter, r *http.Request) {
 // ---------- слушатели ----------
 
 func (s *Server) getListeners(w http.ResponseWriter, r *http.Request) {
-	httpx.JSON(w, http.StatusOK, s.Cfg.Listeners)
+	httpx.JSON(w, http.StatusOK, s.Cfg.Snapshot().Listeners)
 }
 
 // validateListeners проверяет набор слушателей из админки: адреса, типы, дубли
@@ -841,15 +841,23 @@ func (s *Server) putListeners(w http.ResponseWriter, r *http.Request) {
 		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	if s.ApplyListeners != nil {
-		if err := s.ApplyListeners(list); err != nil {
-			httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-			return
+	if err := s.Cfg.Update(func(next *config.Config) error {
+		next.Listeners = list
+		if s.ApplyListeners == nil {
+			return next.Save()
 		}
-	}
-	s.Cfg.Listeners = list
-	if err := s.Cfg.Save(); err != nil {
-		s.Log.Warn("не удалось сохранить конфигурацию", "err", err)
+		var saveErr error
+		err := s.ApplyListeners(list, func() error {
+			saveErr = next.Save()
+			return saveErr
+		})
+		if err != nil && saveErr == nil {
+			return &apiError{Status: http.StatusBadRequest, Message: err.Error()}
+		}
+		return err
+	}); err != nil {
+		s.fail(w, err)
+		return
 	}
 	httpx.JSON(w, http.StatusOK, list)
 }
@@ -865,7 +873,7 @@ type settingsView struct {
 	BudgetPollInterval string  `json:"budget_poll_interval"`
 	WarnPercent        float64 `json:"warn_percent"`
 	CritPercent        float64 `json:"crit_percent"`
-	AlertWebhook       string  `json:"alert_webhook"`
+	AlertWebhook       *string `json:"alert_webhook"`
 	UpstreamBase       string  `json:"upstream_base"`
 }
 
@@ -907,17 +915,18 @@ func parseDurationSetting(name, raw string, min time.Duration) (config.Duration,
 }
 
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
+	cfg := s.Cfg.Snapshot()
 	httpx.JSON(w, http.StatusOK, settingsView{
-		ModelID:            s.Cfg.ModelName(),
-		StreamMode:         s.Cfg.StreamMode,
-		AutoCompactAt:      s.Cfg.AutoCompactAt,
-		SessionTTL:         s.Cfg.SessionTTL.D().String(),
-		RequestTimeout:     s.Cfg.RequestTimeout.D().String(),
-		BudgetPollInterval: s.Cfg.BudgetPollInterval.D().String(),
-		WarnPercent:        s.Cfg.WarnPercent,
-		CritPercent:        s.Cfg.CritPercent,
-		AlertWebhook:       s.Cfg.AlertWebhook,
-		UpstreamBase:       s.Cfg.UpstreamBase,
+		ModelID:            cfg.ModelName(),
+		StreamMode:         cfg.StreamMode,
+		AutoCompactAt:      cfg.AutoCompactAt,
+		SessionTTL:         cfg.SessionTTL.D().String(),
+		RequestTimeout:     cfg.RequestTimeout.D().String(),
+		BudgetPollInterval: cfg.BudgetPollInterval.D().String(),
+		WarnPercent:        cfg.WarnPercent,
+		CritPercent:        cfg.CritPercent,
+		AlertWebhook:       &cfg.AlertWebhook,
+		UpstreamBase:       cfg.UpstreamBase,
 	})
 }
 
@@ -927,56 +936,75 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "Не удалось разобрать запрос"})
 		return
 	}
+	if err := s.Cfg.Update(func(next *config.Config) error {
+		if err := applySettings(next, req); err != nil {
+			return &apiError{Status: http.StatusBadRequest, Message: err.Error()}
+		}
+		return next.Save()
+	}); err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.getSettings(w, r)
+}
+
+func applySettings(next *config.Config, req settingsView) error {
 	if req.ModelID != "" {
 		id, err := normalizeModelID(req.ModelID)
 		if err != nil {
-			httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-			return
+			return err
 		}
-		s.Cfg.ModelID = id
+		next.ModelID = id
 	}
-	if req.StreamMode == "deltas" || req.StreamMode == "final" {
-		s.Cfg.StreamMode = req.StreamMode
+	if req.StreamMode != "" {
+		if req.StreamMode != "deltas" && req.StreamMode != "final" {
+			return fmt.Errorf("неизвестный режим потока %q", req.StreamMode)
+		}
+		next.StreamMode = req.StreamMode
 	}
-	if req.AutoCompactAt > 0 && req.AutoCompactAt <= 1 {
-		s.Cfg.AutoCompactAt = req.AutoCompactAt
+	if req.AutoCompactAt != 0 {
+		if req.AutoCompactAt < 0 || req.AutoCompactAt > 1 {
+			return fmt.Errorf("порог авто-компактизации должен быть больше 0 и не больше 1")
+		}
+		next.AutoCompactAt = req.AutoCompactAt
 	}
-	if v, ok, err := parseDurationSetting("TTL сессии", req.SessionTTL, time.Second); err != nil {
-		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	} else if ok {
-		s.Cfg.SessionTTL = v
+	for _, field := range []struct {
+		name, value string
+		min         time.Duration
+		target      *config.Duration
+	}{
+		{"TTL сессии", req.SessionTTL, time.Second, &next.SessionTTL},
+		{"Таймаут запроса", req.RequestTimeout, time.Second, &next.RequestTimeout},
+		{"Период опроса бюджета", req.BudgetPollInterval, 30 * time.Second, &next.BudgetPollInterval},
+	} {
+		if v, ok, err := parseDurationSetting(field.name, field.value, field.min); err != nil {
+			return err
+		} else if ok {
+			*field.target = v
+		}
 	}
-	if v, ok, err := parseDurationSetting("Таймаут запроса", req.RequestTimeout, time.Second); err != nil {
-		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	} else if ok {
-		s.Cfg.RequestTimeout = v
+	if req.WarnPercent != 0 {
+		next.WarnPercent = req.WarnPercent
 	}
-	if v, ok, err := parseDurationSetting("Период опроса бюджета", req.BudgetPollInterval, 30*time.Second); err != nil {
-		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	} else if ok {
-		s.Cfg.BudgetPollInterval = v
+	if req.CritPercent != 0 {
+		next.CritPercent = req.CritPercent
 	}
-	if req.WarnPercent > 0 && req.WarnPercent < 100 {
-		s.Cfg.WarnPercent = req.WarnPercent
+	if (req.WarnPercent != 0 || req.CritPercent != 0) &&
+		(next.WarnPercent <= 0 || next.CritPercent <= next.WarnPercent || next.CritPercent > 100) {
+		return fmt.Errorf("пороги бюджета должны удовлетворять 0 < предупреждение < критический порог ≤ 100")
 	}
-	if req.CritPercent > s.Cfg.WarnPercent && req.CritPercent <= 100 {
-		s.Cfg.CritPercent = req.CritPercent
+	if req.AlertWebhook != nil {
+		next.AlertWebhook = *req.AlertWebhook
 	}
-	s.Cfg.AlertWebhook = req.AlertWebhook
-	if err := s.Cfg.Save(); err != nil {
-		s.Log.Warn("не удалось сохранить конфигурацию", "err", err)
-	}
-	s.getSettings(w, r)
+	return nil
 }
 
 // ---------- сниппеты подключения ----------
 
 func (s *Server) connect(w http.ResponseWriter, r *http.Request) {
+	cfg := s.Cfg.Snapshot()
 	base := "http://127.0.0.1:47831"
-	if l, ok := s.Cfg.GatewayListener(); ok {
+	if l, ok := cfg.GatewayListener(); ok {
 		host, port, err := net.SplitHostPort(l.Addr)
 		if err == nil {
 			if host == "0.0.0.0" || host == "::" {
@@ -999,7 +1027,7 @@ func (s *Server) connect(w http.ResponseWriter, r *http.Request) {
 		"openai_url":    base + "/v1",
 		"anthropic_url": base,
 		"gemini_url":    base,
-		"model":         s.Cfg.ModelName(),
+		"model":         cfg.ModelName(),
 		"token_hint":    "nr_...",
 		"host":          host,
 	})
@@ -1009,7 +1037,10 @@ func (s *Server) connect(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) fail(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
-	if errors.Is(err, store.ErrNotFound) {
+	var apiErr *apiError
+	if errors.As(err, &apiErr) {
+		status = apiErr.Status
+	} else if errors.Is(err, store.ErrNotFound) {
 		status = http.StatusNotFound
 	}
 	s.Log.Warn("ошибка админ-API", "err", err)
