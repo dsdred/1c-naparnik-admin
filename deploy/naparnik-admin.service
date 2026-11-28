@@ -1,0 +1,35 @@
+[Unit]
+Description=Naparnik Admin — шлюз и админка для 1С:Напарник
+Documentation=https://github.com/dsdred/1c-naparnik-admin
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Замените на своего пользователя и путь к бинарнику.
+User=naparnik
+Group=naparnik
+ExecStart=/opt/naparnik-admin/naparnik-admin -config /etc/naparnik-admin/config.yaml serve
+WorkingDirectory=/opt/naparnik-admin
+Restart=on-failure
+RestartSec=5s
+
+# Данные (SQLite, мастер-ключ) — в отдельном каталоге, доступ только владельцу.
+StateDirectory=naparnik-admin
+StateDirectoryMode=0700
+Environment=NAPARNIK_ADMIN_DATA_DIR=/var/lib/naparnik-admin
+
+# Шлюз не требует root: порты выше 1024, привилегий не нужно.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/naparnik-admin /etc/naparnik-admin
+
+# Логи — в journald: journalctl -u naparnik-admin -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=naparnik-admin
+
+[Install]
+WantedBy=multi-user.target

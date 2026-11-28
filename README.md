@@ -282,6 +282,11 @@ make icon    # иконка и версия в EXE (нужен go-winres)
 
 Структура: `cmd/` — CLI, `internal/naparnik` — клиент API Напарника, `internal/gateway` — сессии и маршрутизация инструментов, `internal/protocol/*` — адаптеры протоколов, `internal/monitor` — бюджеты и статистика, `internal/admin` + `internal/web` — админка (SPA и статика в `internal/web/assets`), `branding/` — исходники фирменного стиля: логотипы, иконки, баннер для GitHub.
 
+Для сборки архивов Windows, Linux и macOS запустите
+`VERSION=1.5.0 bash scripts/build-release.sh` с нужной версией. Архивы и файл
+`SHA256SUMS` попадут в новый каталог `dist/`. Другой новый каталог можно
+указать через `OUT`. В архивы Linux и macOS входят шаблоны служб из `deploy/`.
+
 ## Лицензия
 
 Проект распространяется под лицензией [MIT](LICENSE).

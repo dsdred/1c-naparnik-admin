@@ -125,6 +125,27 @@ func TestSmokeAdapters(t *testing.T) {
 	}
 }
 
+func TestResponsesContinuesWithCodexToolOutput(t *testing.T) {
+	const path = "/v1/responses"
+	const session = "codex-tool"
+	const tools = `,"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}`
+	const call = `{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"}`
+	f := newFixture(t, "final", `{"uuid":"tool-answer","role":"assistant","finished":true,"content":{"tool_calls":[{"id":"call_1","function":{"name":"client_lookup","arguments":"{}"}}]}}`)
+
+	first := request(f.gateway, "POST", path, `{"stream":true,"input":"question"`+tools, token, session)
+	if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), "response.completed") ||
+		!strings.Contains(first.Body.String(), `"call_id":"call_1"`) {
+		t.Fatalf("initial tool call: %d %s", first.Code, first.Body)
+	}
+
+	const continuation = `{"input":[{"role":"user","content":[{"type":"input_text","text":"question"}]},` +
+		call + `,{"type":"function_call_output","call_id":"call_1","output":"found"}]`
+	next := request(f.gateway, "POST", path, continuation+tools, token, session)
+	if next.Code != http.StatusOK || !json.Valid(next.Body.Bytes()) || f.conversations.Load() != 1 {
+		t.Fatalf("tool continuation: HTTP %d, conversations %d, body %s", next.Code, f.conversations.Load(), next.Body)
+	}
+}
+
 func TestGeminiContinuesAfterParallelToolResults(t *testing.T) {
 	const path = "/v1beta/models/naparnik:generateContent"
 	const question = `{"role":"user","parts":[{"text":"question"}]}`

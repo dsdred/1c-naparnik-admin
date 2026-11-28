@@ -1,5 +1,8 @@
 # Сборка
 bin/
+/dist/
+/cover.out
+/cover.func.txt
 *.exe
 *.exe~
 *.test

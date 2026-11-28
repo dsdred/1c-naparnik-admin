@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Launchd-агент для naparnik-admin (macOS).
+
+  Установка (без root, работает под текущим пользователем):
+    1. Скопируйте бинарник в /usr/local/bin, конфиг — в ~/.config/naparnik-admin/
+    2. Поправьте USERNAME и пути ниже, если они другие
+    3. cp com.naparnik.admin.plist ~/Library/LaunchAgents/
+    4. launchctl load -w ~/Library/LaunchAgents/com.naparnik.admin.plist
+
+  Управление: launchctl start|stop com.naparnik.admin
+  Логи:       tail -f ~/Library/Logs/naparnik-admin.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.naparnik.admin</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/naparnik-admin</string>
+        <string>-config</string>
+        <string>/Users/USERNAME/.config/naparnik-admin/config.yaml</string>
+        <string>serve</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/USERNAME/.config/naparnik-admin</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/USERNAME/Library/Logs/naparnik-admin.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/Library/Logs/naparnik-admin.log</string>
+</dict>
+</plist>
