@@ -233,6 +233,7 @@ func (e *Engine) Execute(ctx context.Context, in Input) (*Reply, error) {
 	}
 	defer unlock()
 
+	ctx = e.client.PinEndpoint(ctx)
 	reply, err := e.executeLocked(ctx, in, sessionKey, sticky, false)
 	if err == nil || !conversationGone(err) || (reply != nil && len(reply.Parts) > 0) {
 		return reply, err

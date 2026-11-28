@@ -3,9 +3,13 @@ package gemini
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"hash"
 	"log/slog"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,18 +29,17 @@ type Handler struct {
 	Cfg    config.Source
 	Log    *slog.Logger
 
-	// callIDs хранит соответствие «имя функции → id вызовов» в рамках сессии:
-	// формат Gemini не передаёт идентификатор вызова инструмента. Список нужен
-	// из-за параллельных вызовов одной функции: у них разные id, а имя одно,
-	// поэтому ответы сопоставляются по порядку поступления.
-	callIDs sync.Map
+	// Клиенты, которые опускают необязательные ID, могут восстановить их по
+	// ответу и истории, которая к нему привела. В кэше только недавние ответы.
+	callMu    sync.Mutex
+	callIDs   map[callHistoryKey][]string
+	callOrder []callHistoryKey
 }
 
-// callQueue — очередь id вызовов одной функции: ответы приходят в том же
-// порядке, в каком были объявлены вызовы.
-type callQueue struct {
-	mu  sync.Mutex
-	ids []string
+type callHistoryKey struct {
+	tokenID int64
+	session string
+	digest  [sha256.Size]byte
 }
 
 type generateRequest struct {
@@ -61,10 +64,12 @@ type declaration struct {
 type part struct {
 	Text         string `json:"text"`
 	FunctionCall *struct {
+		ID   string          `json:"id"`
 		Name string          `json:"name"`
 		Args json.RawMessage `json:"args"`
 	} `json:"functionCall"`
 	FunctionResponse *struct {
+		ID       string          `json:"id"`
 		Name     string          `json:"name"`
 		Response json.RawMessage `json:"response"`
 	} `json:"functionResponse"`
@@ -91,7 +96,8 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	turns, tools, err := h.normalize(principal.Token.ID, sessionID(r), &req)
+	session := sessionID(r)
+	turns, tools, err := h.normalize(principal.Token.ID, session, &req)
 	if err != nil {
 		h.writeError(w, principal, err)
 		return
@@ -99,7 +105,7 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	input := gateway.Input{
 		Token: principal.Token, Key: principal.Key, Protocol: "gemini",
-		SessionID: sessionID(r), Turns: turns, Tools: tools,
+		SessionID: session, Turns: turns, Tools: tools,
 	}
 
 	if !stream {
@@ -108,7 +114,7 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 			h.writeError(w, principal, err)
 			return
 		}
-		h.remember(principal.Token.ID, sessionID(r), reply)
+		h.remember(principal.Token.ID, session, turns, reply)
 		h.logRequest(principal, model, 200, "", reply, time.Since(started), false, gateway.LastUserText(turns))
 		httpx.JSON(w, http.StatusOK, h.buildResponse(model, reply))
 		return
@@ -139,7 +145,7 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		sw.Event("", mustJSON(geminiError(ge)))
 		return
 	}
-	h.remember(principal.Token.ID, sessionID(r), reply)
+	h.remember(principal.Token.ID, session, turns, reply)
 	h.logRequest(principal, model, 200, "", reply, time.Since(started), true, gateway.LastUserText(turns))
 
 	if streamMode != "deltas" {
@@ -155,13 +161,7 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 	if calls := reply.ToolCalls(); len(calls) > 0 {
 		parts := make([]any, 0, len(calls))
 		for _, c := range calls {
-			var args any = map[string]any{}
-			if strings.TrimSpace(c.Function.Arguments) != "" {
-				_ = json.Unmarshal([]byte(c.Function.Arguments), &args)
-			}
-			parts = append(parts, map[string]any{
-				"functionCall": map[string]any{"name": c.Function.Name, "args": args},
-			})
+			parts = append(parts, functionCallPart(c))
 		}
 		sw.Event("", mustJSON(map[string]any{
 			"candidates": []any{map[string]any{
@@ -194,10 +194,16 @@ func (h *Handler) streamMode(p *gateway.Principal) string {
 // normalize переводит запрос Gemini во внутреннее представление.
 func (h *Handler) normalize(tokenID int64, session string, req *generateRequest) ([]gateway.Turn, []gateway.Tool, error) {
 	var turns []gateway.Turn
+	history := sha256.New()
+	appendTurn := func(turn gateway.Turn) {
+		turns = append(turns, turn)
+		hashTurn(history, turn)
+	}
+	var pending map[string][]string
 	if req.SystemInstruction != nil {
 		text := partsText(req.SystemInstruction.Parts)
 		if text != "" {
-			turns = append(turns, gateway.Turn{Role: gateway.RoleUser, Text: "[Системные инструкции]\n" + text})
+			appendTurn(gateway.Turn{Role: gateway.RoleUser, Text: "[Системные инструкции]\n" + text})
 		}
 	}
 
@@ -207,7 +213,7 @@ func (h *Handler) normalize(tokenID int64, session string, req *generateRequest)
 			role = "user"
 		}
 		switch role {
-		case "user":
+		case "user", "function":
 			var texts []string
 			for _, p := range c.Parts {
 				switch {
@@ -221,11 +227,19 @@ func (h *Handler) normalize(tokenID int64, session string, req *generateRequest)
 							payload = v
 						}
 					}
-					callID := h.takeCallID(tokenID, session, p.FunctionResponse.Name)
+					name := p.FunctionResponse.Name
+					callID := p.FunctionResponse.ID
+					ids := pending[name]
 					if callID == "" {
-						callID = p.FunctionResponse.Name
+						callID = name
+						if len(ids) > 0 {
+							callID = ids[0]
+						}
 					}
-					turns = append(turns, gateway.Turn{Role: gateway.RoleTool, Results: []naparnik.ToolResult{{
+					if i := slices.Index(ids, callID); i >= 0 {
+						pending[name] = slices.Delete(ids, i, i+1)
+					}
+					appendTurn(gateway.Turn{Role: gateway.RoleTool, Results: []naparnik.ToolResult{{
 						ToolCallID: callID, Status: "ok", Content: payload,
 					}}})
 				case p.InlineData != nil:
@@ -234,7 +248,7 @@ func (h *Handler) normalize(tokenID int64, session string, req *generateRequest)
 				}
 			}
 			if len(texts) > 0 {
-				turns = append(turns, gateway.Turn{Role: gateway.RoleUser, Text: strings.Join(texts, "\n")})
+				appendTurn(gateway.Turn{Role: gateway.RoleUser, Text: strings.Join(texts, "\n")})
 			}
 		case "model", "assistant":
 			t := gateway.Turn{Role: gateway.RoleAssistant}
@@ -250,9 +264,27 @@ func (h *Handler) normalize(tokenID int64, session string, req *generateRequest)
 					if len(p.FunctionCall.Args) > 0 {
 						args = string(p.FunctionCall.Args)
 					}
-					call := naparnik.NewToolCall("call_"+p.FunctionCall.Name, p.FunctionCall.Name, args)
+					call := naparnik.NewToolCall(p.FunctionCall.ID, p.FunctionCall.Name, args)
 					t.Calls = append(t.Calls, call)
 				}
+			}
+			hashTurn(history, t)
+			pending = nil
+			var ids []string
+			if len(t.Calls) > 0 {
+				ids = h.rememberedIDs(historyKey(tokenID, session, history))
+				pending = make(map[string][]string, len(t.Calls))
+			}
+			for i := range t.Calls {
+				call := &t.Calls[i]
+				if call.ID == "" {
+					if i < len(ids) {
+						call.ID = ids[i]
+					} else {
+						call.ID = "call_" + call.Function.Name + "_" + strconv.Itoa(i)
+					}
+				}
+				pending[call.Function.Name] = append(pending[call.Function.Name], call.ID)
 			}
 			turns = append(turns, t)
 		}
@@ -273,13 +305,7 @@ func (h *Handler) buildResponse(model string, reply *gateway.Reply) map[string]a
 		parts = append(parts, map[string]any{"text": text})
 	}
 	for _, c := range reply.ToolCalls() {
-		var args any = map[string]any{}
-		if strings.TrimSpace(c.Function.Arguments) != "" {
-			_ = json.Unmarshal([]byte(c.Function.Arguments), &args)
-		}
-		parts = append(parts, map[string]any{
-			"functionCall": map[string]any{"name": c.Function.Name, "args": args},
-		})
+		parts = append(parts, functionCallPart(c))
 	}
 	out := map[string]any{
 		"candidates": []any{map[string]any{
@@ -295,60 +321,81 @@ func (h *Handler) buildResponse(model string, reply *gateway.Reply) map[string]a
 	return out
 }
 
-// remember запоминает id вызовов, чтобы сопоставить их с functionResponse.
-// Для параллельных вызовов одной функции сохраняется список: имя одно, а id разные.
-func (h *Handler) remember(tokenID int64, session string, reply *gateway.Reply) {
-	byName := map[string][]string{}
-	order := make([]string, 0, len(reply.ToolCalls()))
-	for _, c := range reply.ToolCalls() {
-		name := c.Function.Name
-		if _, seen := byName[name]; !seen {
-			order = append(order, name)
+func functionCallPart(call naparnik.ToolCall) map[string]any {
+	return map[string]any{"functionCall": map[string]any{
+		"id": call.ID, "name": call.Function.Name, "args": callArguments(call.Function.Arguments),
+	}}
+}
+
+func callArguments(raw string) any {
+	var args any = map[string]any{}
+	if strings.TrimSpace(raw) != "" {
+		_ = json.Unmarshal([]byte(raw), &args)
+	}
+	return args
+}
+
+// hashTurn описывает реплику так, как её видит клиент, даже если при возврате
+// истории он опустил ID или переставил ключи в JSON аргументов.
+func hashTurn(history hash.Hash, turn gateway.Turn) {
+	turn.Calls = slices.Clone(turn.Calls)
+	for i := range turn.Calls {
+		call := &turn.Calls[i]
+		call.ID = ""
+		call.Index = 0
+		call.Type = ""
+		encoded, _ := json.Marshal(callArguments(call.Function.Arguments))
+		call.Function.Arguments = string(encoded)
+	}
+	turn.Results = slices.Clone(turn.Results)
+	for i := range turn.Results {
+		turn.Results[i].ToolCallID = ""
+	}
+	_ = json.NewEncoder(history).Encode(turn)
+}
+
+func historyKey(tokenID int64, session string, history hash.Hash) callHistoryKey {
+	key := callHistoryKey{tokenID: tokenID, session: session}
+	history.Sum(key.digest[:0])
+	return key
+}
+
+func (h *Handler) remember(tokenID int64, session string, turns []gateway.Turn, reply *gateway.Reply) {
+	calls := reply.ToolCalls()
+	if len(calls) == 0 {
+		return
+	}
+	history := sha256.New()
+	for _, turn := range turns {
+		hashTurn(history, turn)
+	}
+	hashTurn(history, gateway.Turn{Role: gateway.RoleAssistant, Text: reply.Text(), Calls: calls})
+	key := historyKey(tokenID, session, history)
+	ids := make([]string, len(calls))
+	for i, call := range calls {
+		ids[i] = call.ID
+	}
+
+	h.callMu.Lock()
+	defer h.callMu.Unlock()
+	if h.callIDs == nil {
+		h.callIDs = make(map[callHistoryKey][]string)
+	}
+	if _, exists := h.callIDs[key]; !exists {
+		const cacheLimit = 512
+		if len(h.callOrder) == cacheLimit {
+			delete(h.callIDs, h.callOrder[0])
+			h.callOrder = h.callOrder[1:]
 		}
-		byName[name] = append(byName[name], c.ID)
+		h.callOrder = append(h.callOrder, key)
 	}
-	for _, name := range order {
-		h.callIDs.Store(callKey(tokenID, session, name), &callQueue{ids: byName[name]})
-	}
+	h.callIDs[key] = ids
 }
 
-// takeCallID выдаёт очередной id вызова по имени функции. Порядок ответов
-// совпадает с порядком объявленных вызовов, поэтому очередь идёт по кругу:
-// когда ответов больше, чем id, возвращается последний известный.
-func (h *Handler) takeCallID(tokenID int64, session, name string) string {
-	v, ok := h.callIDs.Load(callKey(tokenID, session, name))
-	if !ok {
-		return ""
-	}
-	q, ok := v.(*callQueue)
-	if !ok || len(q.ids) == 0 {
-		return ""
-	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	id := q.ids[0]
-	if len(q.ids) > 1 {
-		q.ids = q.ids[1:]
-	}
-	return id
-}
-
-func callKey(tokenID int64, session, name string) string {
-	return strings.Join([]string{itoa(tokenID), session, name}, "|")
-}
-
-func itoa(v int64) string {
-	if v == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for v > 0 {
-		i--
-		buf[i] = byte('0' + v%10)
-		v /= 10
-	}
-	return string(buf[i:])
+func (h *Handler) rememberedIDs(key callHistoryKey) []string {
+	h.callMu.Lock()
+	defer h.callMu.Unlock()
+	return h.callIDs[key]
 }
 
 func partsText(parts []part) string {

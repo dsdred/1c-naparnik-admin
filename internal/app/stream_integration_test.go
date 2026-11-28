@@ -125,6 +125,33 @@ func TestSmokeAdapters(t *testing.T) {
 	}
 }
 
+func TestGeminiContinuesAfterParallelToolResults(t *testing.T) {
+	const path = "/v1beta/models/naparnik:generateContent"
+	const question = `{"role":"user","parts":[{"text":"question"}]}`
+	const declarations = `,"tools":[{"functionDeclarations":[{"name":"lookup"}]}]}`
+	const upstreamReply = `{"uuid":"tool-answer","role":"assistant","finished":true,"content":{"tool_calls":[` +
+		`{"id":"first","function":{"name":"client_lookup","arguments":"{\"n\":1}"}},` +
+		`{"id":"second","function":{"name":"client_lookup","arguments":"{\"n\":2}"}}]}}`
+	for _, tc := range []struct{ name, firstPath, history string }{
+		{"legacy", path, `{"role":"model","parts":[{"functionCall":{"name":"lookup","args":{"n":1}}},{"functionCall":{"name":"lookup","args":{"n":2}}}]},
+			{"role":"user","parts":[{"functionResponse":{"name":"lookup","response":{"n":1}}},{"functionResponse":{"name":"lookup","response":{"n":2}}}]}`},
+		{"explicit SSE, out of order", "/v1beta/models/naparnik:streamGenerateContent", `{"role":"model","parts":[{"functionCall":{"id":"first","name":"lookup","args":{"n":1}}},{"functionCall":{"id":"second","name":"lookup","args":{"n":2}}}]},
+			{"role":"function","parts":[{"functionResponse":{"id":"second","name":"lookup","response":{"n":2}}},{"functionResponse":{"id":"first","name":"lookup","response":{"n":1}}}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, "final", upstreamReply)
+			first := request(f.gateway, "POST", tc.firstPath, `{"contents":[`+question+`]`+declarations, token, "gemini-parallel")
+			if first.Code != 200 || !strings.Contains(first.Body.String(), `"id":"first"`) || !strings.Contains(first.Body.String(), `"id":"second"`) {
+				t.Fatalf("initial calls: %d %s", first.Code, first.Body)
+			}
+			next := request(f.gateway, "POST", path, `{"contents":[`+question+","+tc.history+`]`+declarations, token, "gemini-parallel")
+			if next.Code != 200 || f.conversations.Load() != 1 {
+				t.Fatalf("tool results started another conversation: HTTP %d, conversations %d, body %s", next.Code, f.conversations.Load(), next.Body)
+			}
+		})
+	}
+}
+
 func TestSmokeConcurrentChats(t *testing.T) {
 	f := newFixture(t, "final", finished)
 	var wg sync.WaitGroup

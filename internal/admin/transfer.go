@@ -3,6 +3,7 @@ package admin
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -76,48 +77,41 @@ func (s *Server) transferImport(w http.ResponseWriter, r *http.Request) {
 
 	// Проверяем слушатели и настройки до замены ключей: битый файл не должен
 	// оставить сервис без ключей и токенов.
-	check := *s.Cfg.Snapshot()
 	if len(bundle.Listeners) > 0 {
 		if err := config.ValidateListeners(bundle.Listeners); err != nil {
 			httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "Слушатели в файле: " + err.Error()})
 			return
 		}
 	}
-	if err := bundle.Settings.Apply(&check); err != nil {
-		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "Настройки в файле: " + err.Error()})
-		return
-	}
-
-	res, err := transfer.Import(r.Context(), s.Store, s.Cipher, bundle)
-	if err != nil {
-		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-
-	// Применяем слушатели и сохраняем конфиг. Ключи к этому моменту уже заменены,
-	// поэтому ошибку привязки порта сообщаем как есть, а не откатываем молча.
-	applyErr := s.Cfg.Update(func(c *config.Config) error {
-		if err := bundle.Settings.Apply(c); err != nil {
+	var res transfer.Result
+	// Слушатели сначала резервируют порты. Замена ключей и сохранение файла
+	// выполняются в их callback до публикации новой конфигурации.
+	if err := s.Cfg.Update(func(next *config.Config) error {
+		if err := bundle.Settings.Apply(next); err != nil {
+			return &apiError{Status: http.StatusBadRequest, Message: "Настройки в файле: " + err.Error()}
+		}
+		commit := func() error {
+			var err error
+			res, err = transfer.ImportWithConfig(r.Context(), s.Store, s.Cipher, bundle, next)
+			if err != nil && !errors.Is(err, transfer.ErrSaveConfig) {
+				return &apiError{Status: http.StatusBadRequest, Message: err.Error()}
+			}
 			return err
 		}
-		if len(bundle.Listeners) == 0 {
-			return c.Save()
+		if len(bundle.Listeners) > 0 {
+			next.Listeners = bundle.Listeners
+			if s.ApplyListeners != nil {
+				return s.ApplyListeners(next.Listeners, commit)
+			}
 		}
-		if s.ApplyListeners == nil {
-			c.Listeners = bundle.Listeners
-			return c.Save()
+		return commit()
+	}); err != nil {
+		var apiErr *apiError
+		if errors.As(err, &apiErr) {
+			s.fail(w, err)
+		} else {
+			s.fail(w, &apiError{Status: http.StatusConflict, Message: "Импорт прерван: " + err.Error()})
 		}
-		return s.ApplyListeners(bundle.Listeners, func() error {
-			c.Listeners = bundle.Listeners
-			return c.Save()
-		})
-	})
-	if applyErr != nil {
-		s.Log.Warn("настройки перенесены, но применить слушатели не удалось", "err", applyErr)
-		httpx.JSON(w, http.StatusConflict, map[string]any{
-			"error": "Ключи и токены перенесены, но слушатели не применились: " + applyErr.Error(),
-			"keys":  res.Keys, "tokens": res.Tokens, "skipped": res.Skipped,
-		})
 		return
 	}
 

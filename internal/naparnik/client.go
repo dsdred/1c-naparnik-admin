@@ -19,11 +19,12 @@ import (
 // sseRead — обёртка над разбором SSE, чтобы не тянуть зависимость в вызывающий код.
 // Client — клиент Напарника. Один экземпляр на процесс, ключ передаётся в каждый вызов.
 type Client struct {
-	base           string
-	requestTimeout func() time.Duration
-	mu             sync.Mutex
-	transport      *http.Transport
+	settings  func() (string, time.Duration)
+	mu        sync.Mutex
+	transport *http.Transport
 }
+
+type endpointKey struct{ client *Client }
 
 // New создаёт клиент. base — например https://code.1c.ai/public/v1
 func New(base string, requestTimeout time.Duration) *Client {
@@ -32,13 +33,23 @@ func New(base string, requestTimeout time.Duration) *Client {
 
 // NewWithTimeout selects a response-header timeout for each new request.
 func NewWithTimeout(base string, timeout func() time.Duration) *Client {
-	return &Client{base: strings.TrimRight(base, "/"), requestTimeout: timeout}
+	return NewWithSettings(func() (string, time.Duration) { return base, timeout() })
 }
 
-func (c *Client) currentTransport() *http.Transport {
+// NewWithSettings reads the endpoint and header timeout from the same snapshot.
+func NewWithSettings(settings func() (string, time.Duration)) *Client {
+	return &Client{settings: settings}
+}
+
+// PinEndpoint keeps a turn on one upstream when it needs several API calls.
+func (c *Client) PinEndpoint(ctx context.Context) context.Context {
+	base, _ := c.settings()
+	return context.WithValue(ctx, endpointKey{c}, base)
+}
+
+func (c *Client) currentTransport(timeout time.Duration) *http.Transport {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	timeout := c.requestTimeout()
 	if c.transport != nil {
 		if c.transport.ResponseHeaderTimeout == timeout {
 			return c.transport
@@ -213,7 +224,11 @@ func (c *Client) request(ctx context.Context, key, method, path string, body any
 		}
 		reader = bytes.NewReader(data)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, reader)
+	base, timeout := c.settings()
+	if pinned, ok := ctx.Value(endpointKey{c}).(string); ok {
+		base = pinned
+	}
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(base, "/")+path, reader)
 	if err != nil {
 		return nil, err
 	}
@@ -226,7 +241,7 @@ func (c *Client) request(ctx context.Context, key, method, path string, body any
 	}
 	req.Header.Set("Accept", accept)
 	req.Header.Set("User-Agent", "naparnik-admin/0.1")
-	client := http.Client{Transport: c.currentTransport()}
+	client := http.Client{Transport: c.currentTransport(timeout)}
 	return client.Do(req)
 }
 

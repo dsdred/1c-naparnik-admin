@@ -59,3 +59,24 @@ func TestParseLogFilterPeriod(t *testing.T) {
 		t.Fatal("формат dd.mm.yyyy не поддерживается — ожидалась ошибка")
 	}
 }
+
+func TestLogFilterValidatesNumbersAndAbsoluteTimes(t *testing.T) {
+	for _, params := range []url.Values{
+		{"token_id": {"invalid"}},
+		{"key_id": {"-1"}},
+		{"status": {"200x"}},
+		{"hours": {"9223372036854775807"}},
+		{"hours": {"1"}, "from": {"2026-11-28T00:00:00Z"}},
+	} {
+		if _, err := parseLogFilter(params); err == nil {
+			t.Fatalf("invalid filter accepted: %v", params)
+		}
+	}
+	f, err := parseLogFilter(url.Values{
+		"from": {"2026-11-28T05:00:00.000+05:00"},
+		"to":   {"2026-11-28T00:00:59.000Z"},
+	})
+	if err != nil || f.Since.Unix() != time.Date(2026, 11, 28, 0, 0, 0, 0, time.UTC).Unix() || f.Until.Sub(f.Since) != 59*time.Second {
+		t.Fatalf("absolute filter lost its timezone or minute boundary: %+v, %v", f, err)
+	}
+}

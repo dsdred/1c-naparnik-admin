@@ -18,7 +18,8 @@ var ErrNotFound = errors.New("не найдено")
 
 // Store — обёртка над базой.
 type Store struct {
-	db *sql.DB
+	db      *sql.DB
+	touchDB *sql.DB
 }
 
 // Key — ключ Напарника (секрет хранится в зашифрованном виде).
@@ -109,7 +110,8 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	dsn := "file:" + filepath.ToSlash(path) +
+	file := "file:" + filepath.ToSlash(path)
+	dsn := file +
 		"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -121,11 +123,19 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	// Метка последнего использования не должна ждать пишущую транзакцию
+	// на пути авторизации. У остальных записей остаётся обычный busy_timeout.
+	s.touchDB, err = sql.Open("sqlite", file+"?_pragma=busy_timeout(0)&_pragma=synchronous(NORMAL)")
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	s.touchDB.SetMaxOpenConns(1)
 	return s, nil
 }
 
 // Close закрывает базу.
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error { return errors.Join(s.touchDB.Close(), s.db.Close()) }
 
 func (s *Store) migrate() error {
 	const schema = `
@@ -446,9 +456,12 @@ func (s *Store) ResolveToken(ctx context.Context, hash string) (Token, error) {
 	return t, nil
 }
 
-// TouchToken отмечает время последнего использования.
+// TouchToken отмечает время последнего использования, если база свободна.
 func (s *Store) TouchToken(ctx context.Context, id int64) {
-	_, _ = s.db.ExecContext(ctx, `UPDATE tokens SET last_used_at=? WHERE id=?`, time.Now().Unix(), id)
+	ctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	now := time.Now().Unix()
+	_, _ = s.touchDB.ExecContext(ctx, `UPDATE tokens SET last_used_at=? WHERE id=? AND (last_used_at IS NULL OR last_used_at<?)`, now, id, now)
 }
 
 // UpdateToken меняет название, провайдера, режим потока, политику серверных инструментов и активность.

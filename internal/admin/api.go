@@ -689,15 +689,35 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 // разъезжаются.
 func parseLogFilter(q url.Values) (store.LogFilter, error) {
 	f := store.LogFilter{Protocol: q.Get("protocol")}
-	f.KeyID, _ = strconv.ParseInt(q.Get("key_id"), 10, 64)
-	f.TokenID, _ = strconv.ParseInt(q.Get("token_id"), 10, 64)
-	f.Status, _ = strconv.Atoi(q.Get("status"))
-	if v := q.Get("hours"); v != "" {
-		if hours := atoiDefault(v, 0); hours > 0 {
+	var err error
+	if f.KeyID, err = parseOptInt64(q, "key_id"); err != nil {
+		return f, err
+	}
+	if f.TokenID, err = parseOptInt64(q, "token_id"); err != nil {
+		return f, err
+	}
+	status, err := parseOptInt64(q, "status")
+	if err != nil {
+		return f, err
+	}
+	f.Status = int(status)
+
+	hoursRaw := strings.TrimSpace(q.Get("hours"))
+	fromRaw := strings.TrimSpace(q.Get("from"))
+	if hoursRaw != "" && fromRaw != "" {
+		return f, errors.New("Укажите либо hours, либо from — не оба сразу")
+	}
+	if hoursRaw != "" {
+		hours, err := strconv.ParseInt(hoursRaw, 10, 64)
+		const maxHours = (1<<63 - 1) / int64(time.Hour)
+		if err != nil || hours < 0 || hours > maxHours {
+			return f, fmt.Errorf("Неверное число часов: %s", hoursRaw)
+		}
+		if hours > 0 {
 			f.Since = time.Now().Add(-time.Duration(hours) * time.Hour)
 		}
 	}
-	if v := strings.TrimSpace(q.Get("from")); v != "" {
+	if v := fromRaw; v != "" {
 		t, err := parseLogTime(v, false)
 		if err != nil {
 			return f, fmt.Errorf("Неверная дата «от»: %s", v)
@@ -715,6 +735,18 @@ func parseLogFilter(q url.Values) (store.LogFilter, error) {
 		return f, errors.New("Дата «до» раньше даты «от»")
 	}
 	return f, nil
+}
+
+func parseOptInt64(q url.Values, name string) (int64, error) {
+	raw := strings.TrimSpace(q.Get(name))
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		return 0, fmt.Errorf("Неверное значение %s: %s", name, raw)
+	}
+	return value, nil
 }
 
 // parseLogTime разбирает дату из фильтра. Принимает значение поля datetime-local

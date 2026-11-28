@@ -110,9 +110,12 @@ func runImport(configPath string, log *slog.Logger, args []string) error {
 			return fmt.Errorf("слушатели в файле: %w", err)
 		}
 	}
-	check := *cfg
-	if err := bundle.Settings.Apply(&check); err != nil {
+	next := *cfg
+	if err := bundle.Settings.Apply(&next); err != nil {
 		return fmt.Errorf("настройки в файле: %w", err)
+	}
+	if len(bundle.Listeners) > 0 {
+		next.Listeners = bundle.Listeners
 	}
 
 	st, err := store.Open(cfg.DBPath())
@@ -128,21 +131,9 @@ func runImport(configPath string, log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	res, err := transfer.Import(context.Background(), st, cipher, bundle)
+	res, err := transfer.ImportWithConfig(context.Background(), st, cipher, bundle, &next)
 	if err != nil {
 		return err
-	}
-
-	// Настройки и слушатели — в config.yaml. Слушатели начнут работать после
-	// перезапуска сервиса: CLI не поднимает порты.
-	if err := bundle.Settings.Apply(cfg); err != nil {
-		return err
-	}
-	if len(bundle.Listeners) > 0 {
-		cfg.Listeners = bundle.Listeners
-	}
-	if err := cfg.Save(); err != nil {
-		return fmt.Errorf("ключи перенесены, но конфигурация не сохранена: %w", err)
 	}
 
 	log.Info("настройки перенесены", "keys", res.Keys, "tokens", res.Tokens, "skipped", res.Skipped)

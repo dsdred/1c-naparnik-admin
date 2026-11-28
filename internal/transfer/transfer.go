@@ -11,7 +11,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/argon2"
@@ -30,6 +32,9 @@ const Version = 1
 // MinPasswordLen — минимальная длина пароля шифрования файла.
 const MinPasswordLen = 8
 
+// ErrSaveConfig identifies a filesystem error while applying an import.
+var ErrSaveConfig = errors.New("сохранение конфигурации")
+
 // Параметры вывода ключа из пароля. Хранятся в файле, чтобы файл, созданный
 // старым бинарником, читался новым.
 const (
@@ -37,6 +42,10 @@ const (
 	kdfMemory  = 64 * 1024
 	kdfThreads = 4
 	kdfKeyLen  = 32
+	kdfSaltLen = 16
+	fileCipher = "aes-256-gcm"
+	nonceLen   = 12
+	tagLen     = 16
 )
 
 // aad связывает шифртекст с форматом и версией: подмена версии в файле
@@ -57,14 +66,15 @@ type Key struct {
 // не сохранено в исходной базе (токен выпущен до появления шифртекста) —
 // такой токен перенести нельзя, на новой машине его придётся выпустить заново.
 type Token struct {
-	KeyName         string `json:"key_name"`
-	Name            string `json:"name"`
-	Secret          string `json:"secret,omitempty"`
-	SecretAvailable bool   `json:"secret_available"`
-	Provider        string `json:"provider,omitempty"`
-	StreamMode      string `json:"stream_mode,omitempty"`
-	ServerTools     string `json:"server_tools,omitempty"`
-	Enabled         bool   `json:"enabled"`
+	KeyName         string     `json:"key_name"`
+	Name            string     `json:"name"`
+	Secret          string     `json:"secret,omitempty"`
+	SecretAvailable bool       `json:"secret_available"`
+	Provider        string     `json:"provider,omitempty"`
+	StreamMode      string     `json:"stream_mode,omitempty"`
+	ServerTools     string     `json:"server_tools,omitempty"`
+	Enabled         bool       `json:"enabled"`
+	RevokedAt       *time.Time `json:"revoked_at,omitempty"`
 }
 
 // Settings — настройки сервиса в том виде, в каком их видит админка.
@@ -189,7 +199,13 @@ func (s Settings) Apply(cfg *config.Config) error {
 	}
 	cfg.AlertWebhook = s.AlertWebhook
 	if s.UpstreamBase != "" {
-		cfg.UpstreamBase = s.UpstreamBase
+		base := strings.TrimRight(strings.TrimSpace(s.UpstreamBase), "/")
+		target, err := url.Parse(base)
+		if err != nil || (target.Scheme != "http" && target.Scheme != "https") || target.Hostname() == "" ||
+			target.User != nil || target.ForceQuery || target.RawQuery != "" || target.Fragment != "" {
+			return errors.New("адрес API Напарника должен быть HTTP(S) URL без учётных данных, параметров и фрагмента")
+		}
+		cfg.UpstreamBase = base
 	}
 	return nil
 }
@@ -234,7 +250,7 @@ func Export(ctx context.Context, st *store.Store, cipher *secrets.Cipher, cfg *c
 	for _, t := range tokens {
 		item := Token{
 			KeyName: keyName[t.KeyID], Name: t.Name, Provider: t.Provider,
-			StreamMode: t.StreamMode, ServerTools: t.ServerTools, Enabled: t.Enabled,
+			StreamMode: t.StreamMode, ServerTools: t.ServerTools, Enabled: t.Enabled, RevokedAt: t.RevokedAt,
 		}
 		if enc, err := st.TokenSecret(ctx, t.ID); err == nil && enc != "" {
 			if plain, err := cipher.Decrypt([]byte(enc)); err == nil {
@@ -251,6 +267,12 @@ func Export(ctx context.Context, st *store.Store, cipher *secrets.Cipher, cfg *c
 // мастер-ключом этого экземпляра, хеши токенов пересчитываются из значения —
 // клиентам не нужно менять токены после переезда.
 func Import(ctx context.Context, st *store.Store, cipher *secrets.Cipher, b *Bundle) (Result, error) {
+	return ImportWithConfig(ctx, st, cipher, b, nil)
+}
+
+// ImportWithConfig также сохраняет подготовленную конфигурацию. Если файл
+// сохранить не удастся, SQLite откатит замену ключей и токенов.
+func ImportWithConfig(ctx context.Context, st *store.Store, cipher *secrets.Cipher, b *Bundle, cfg *config.Config) (Result, error) {
 	if b.Format != "" && b.Format != Format {
 		return Result{}, fmt.Errorf("это не файл переноса naparnik-admin (формат %q)", b.Format)
 	}
@@ -300,12 +322,22 @@ func Import(ctx context.Context, st *store.Store, cipher *secrets.Cipher, b *Bun
 		tokens = append(tokens, store.TransferToken{
 			KeyName: t.KeyName, Name: t.Name, Provider: t.Provider, Prefix: prefix,
 			Hash: secrets.HashToken(t.Secret), Enc: string(enc),
-			StreamMode: t.StreamMode, ServerTools: serverTools, Enabled: t.Enabled,
+			StreamMode: t.StreamMode, ServerTools: serverTools, Enabled: t.Enabled, RevokedAt: t.RevokedAt,
 		})
 	}
 	res.Tokens = len(tokens)
 
-	if err := st.ReplaceAll(ctx, keys, tokens); err != nil {
+	var stage func() (func() error, error)
+	if cfg != nil {
+		stage = func() (func() error, error) {
+			undo, err := cfg.SaveReversible()
+			if err != nil {
+				return nil, fmt.Errorf("%w: %w", ErrSaveConfig, err)
+			}
+			return undo, nil
+		}
+	}
+	if err := st.ReplaceAll(ctx, keys, tokens, stage); err != nil {
 		return Result{}, err
 	}
 	res.Listeners = len(b.Listeners)
@@ -321,7 +353,7 @@ func Seal(b *Bundle, password string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	salt := make([]byte, 16)
+	salt := make([]byte, kdfSaltLen)
 	if _, err := rand.Read(salt); err != nil {
 		return nil, err
 	}
@@ -343,7 +375,7 @@ func Seal(b *Bundle, password string) ([]byte, error) {
 			Name: "argon2id", Salt: base64.StdEncoding.EncodeToString(salt),
 			Time: kdfTime, Memory: kdfMemory, Threads: kdfThreads, KeyLen: kdfKeyLen,
 		},
-		Cipher: "aes-256-gcm",
+		Cipher: fileCipher,
 		Nonce:  base64.StdEncoding.EncodeToString(nonce),
 		Data:   base64.StdEncoding.EncodeToString(sealed),
 	}
@@ -363,19 +395,25 @@ func Open(data []byte, password string) (*Bundle, error) {
 	if env.Version > Version {
 		return nil, fmt.Errorf("файл создан более новой версией (формат %d, поддерживается %d)", env.Version, Version)
 	}
+	// Версия 1 выпускалась только с этим набором параметров. Проверяем их
+	// до вычисления ключа, как и размеры полей контейнера.
+	if env.Cipher != fileCipher || env.KDF.Name != "argon2id" || env.KDF.Time != kdfTime ||
+		env.KDF.Memory != kdfMemory || env.KDF.Threads != kdfThreads || env.KDF.KeyLen != kdfKeyLen {
+		return nil, errors.New("файл повреждён: неверные параметры шифрования")
+	}
 	salt, err := base64.StdEncoding.DecodeString(env.KDF.Salt)
-	if err != nil || env.KDF.Name != "argon2id" {
+	if err != nil || len(salt) != kdfSaltLen {
 		return nil, errors.New("файл повреждён: неверные параметры шифрования")
 	}
 	nonce, err := base64.StdEncoding.DecodeString(env.Nonce)
-	if err != nil {
+	if err != nil || len(nonce) != nonceLen {
 		return nil, errors.New("файл повреждён: нет вектора инициализации")
 	}
 	sealed, err := base64.StdEncoding.DecodeString(env.Data)
-	if err != nil {
+	if err != nil || len(sealed) < tagLen {
 		return nil, errors.New("файл повреждён: нет данных")
 	}
-	key := argon2.IDKey([]byte(password), salt, env.KDF.Time, env.KDF.Memory, env.KDF.Threads, env.KDF.KeyLen)
+	key := argon2.IDKey([]byte(password), salt, kdfTime, kdfMemory, kdfThreads, kdfKeyLen)
 	aead, err := newAEAD(key)
 	if err != nil {
 		return nil, err

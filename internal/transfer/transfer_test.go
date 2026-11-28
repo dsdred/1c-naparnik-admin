@@ -2,6 +2,8 @@ package transfer
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -81,6 +83,19 @@ func TestSealOpenRoundTrip(t *testing.T) {
 	}
 	if _, err := Open([]byte("не json"), "correct-horse"); err == nil {
 		t.Fatal("повреждённый файл должен отклоняться")
+	}
+
+	var metadata envelope
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	metadata.Cipher = "unsupported"
+	incompatible, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(incompatible, "correct-horse"); err == nil {
+		t.Fatal("несовместимый формат шифрования должен отклоняться")
 	}
 }
 
@@ -167,6 +182,85 @@ func TestExportImportRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	} else if secret, err := dstCipher.Decrypt([]byte(secretEnc)); err != nil || secret != plain {
 		t.Fatalf("значение токена: %q, %v", secret, err)
+	}
+}
+
+func TestExportImportPreservesRevocation(t *testing.T) {
+	ctx := context.Background()
+	src, dst := newStore(t), newStore(t)
+	cipher := newCipher(t)
+	keyID, err := src.CreateKey(ctx, "fixture", "fixture", mustEncrypt(t, cipher, "fixture-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const plain = "fixture-revoked-token"
+	hash := secrets.HashToken(plain)
+	id, err := src.CreateToken(ctx, store.Token{KeyID: keyID, Name: "fixture", Enabled: true}, hash, mustEncryptString(t, cipher, plain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := src.RevokeToken(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	before, err := src.ResolveToken(ctx, hash)
+	if err != nil || before.RevokedAt == nil {
+		t.Fatalf("invalid source fixture: %+v, %v", before, err)
+	}
+	bundle, err := Export(ctx, src, cipher, config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := Seal(bundle, "fixture-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err = Open(data, "fixture-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Import(ctx, dst, cipher, bundle); err != nil {
+		t.Fatal(err)
+	}
+	after, err := dst.ResolveToken(ctx, hash)
+	if err != nil || after.Enabled || after.RevokedAt == nil || !after.RevokedAt.Equal(*before.RevokedAt) {
+		t.Fatalf("revocation did not survive transfer: enabled=%t, revoked=%v, error=%v", after.Enabled, after.RevokedAt, err)
+	}
+}
+
+func TestCancelledReplacementRestoresSavedConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	const original = "# keep this comment\nmodel_id: original\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ModelID = "replacement"
+	st := newStore(t)
+	if _, err := st.CreateKey(context.Background(), "original", "original", []byte("fixture")); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := st.ReplaceAll(ctx, nil, nil, func() (func() error, error) {
+		undo, err := cfg.SaveReversible()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cancel()
+		return undo, nil
+	}); err == nil {
+		t.Fatal("cancelled replacement unexpectedly committed")
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil || string(saved) != original {
+		t.Fatalf("configuration was not restored: %q, %v", saved, err)
+	}
+	keys, err := st.ListKeys(context.Background())
+	if err != nil || len(keys) != 1 || keys[0].Name != "original" {
+		t.Fatalf("failed commit changed the original database: %v, %v", keys, err)
 	}
 }
 

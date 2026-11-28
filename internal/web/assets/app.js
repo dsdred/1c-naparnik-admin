@@ -319,7 +319,7 @@ function toggleInfo(e) {
 
 // confirmDialog — подтверждение в стиле админки вместо нативного confirm().
 // Возвращает Promise<boolean>: true — «ОК», false — отмена/Esc/клик по фону.
-function confirmDialog({ title, text, ok, cancel, danger }) {
+function confirmDialog({ title, text, ok, okIcon = 'check', cancel, danger }) {
   return new Promise((resolve) => {
     const wrap = document.createElement('div');
     wrap.className = 'modal-backdrop';
@@ -328,8 +328,8 @@ function confirmDialog({ title, text, ok, cancel, danger }) {
         <h2 style="margin-top:0">${esc(title || 'Подтвердите действие')}</h2>
         <p class="muted" style="margin:0 0 18px">${esc(text || '')}</p>
         <div class="row" style="justify-content:flex-end">
-          <button class="btn ghost" data-act="cancel">${esc(cancel || 'Отмена')}</button>
-          <button class="btn ${danger ? 'danger' : ''}" data-act="ok">${esc(ok || 'Да')}</button>
+          ${iconBtn('clear', cancel || 'Отмена', { 'data-act': 'cancel' })}
+          ${iconBtn(okIcon, ok || 'Подтвердить', { 'data-act': 'ok' }, danger ? 'danger' : 'primary')}
         </div>
       </div>`;
     const close = (val) => {
@@ -339,7 +339,6 @@ function confirmDialog({ title, text, ok, cancel, danger }) {
     };
     const onKey = (e) => {
       if (e.key === 'Escape') { e.preventDefault(); close(false); }
-      if (e.key === 'Enter') { e.preventDefault(); close(true); }
     };
     wrap.addEventListener('click', (e) => {
       if (e.target === wrap) return close(false);
@@ -348,8 +347,7 @@ function confirmDialog({ title, text, ok, cancel, danger }) {
     });
     document.addEventListener('keydown', onKey);
     document.body.appendChild(wrap);
-    const okBtn = wrap.querySelector('[data-act="ok"]');
-    if (okBtn) okBtn.focus();
+    wrap.querySelector(danger ? '[data-act="cancel"]' : '[data-act="ok"]').focus();
   });
 }
 
@@ -382,7 +380,7 @@ function renderSetup() {
       <div class="grid">
         <input id="pw" type="password" placeholder="Пароль (не короче 6 символов)">
         <input id="pw2" type="password" placeholder="Повторите пароль">
-        <button class="btn" onclick="setupPassword()">Сохранить и войти</button>
+        ${iconBtn('logIn', 'Сохранить и войти', 'setupPassword()', 'primary')}
         <div class="error" id="err"></div>
       </div>
     </div>`;
@@ -410,7 +408,7 @@ function renderLogin() {
       <h1>Вход в админку</h1>
       <div class="grid">
         <input id="pw" type="password" placeholder="Пароль" onkeydown="if(event.key==='Enter')login()">
-        <button class="btn" onclick="login()">Войти</button>
+        <button type="button" class="btn login-submit" onclick="login()">Вход</button>
         <div class="error" id="err"></div>
       </div>
     </div>`;
@@ -474,9 +472,6 @@ async function renderShell() {
         <div class="nav">
           ${VIEWS.map((v) => `<div class="nav-group">${v.group}</div>${v.items.map(([id, t]) => navButton(id, t)).join('')}`).join('')}
         </div>
-        <div class="sidebar-footer">
-          <button class="btn ghost small" style="width:100%" onclick="logout()">Выйти</button>
-        </div>
       </aside>
       <div class="nav-backdrop" id="navBackdrop" onclick="closeNav()"></div>
       <div class="content">
@@ -486,6 +481,7 @@ async function renderShell() {
           </button>
           <div class="topbar-logo">${LOGO}</div>
           <button class="theme-toggle" data-theme-toggle onclick="toggleTheme()"></button>
+          ${iconBtn('logOut', 'Выйти', 'logout()')}
         </header>
         <main class="main" id="main"></main>
       </div>
@@ -528,7 +524,7 @@ async function renderOverview(main) {
     main.innerHTML = `<h1>Обзор</h1>
       <div class="card">
         <p>Ключей Напарника пока нет.</p>
-        <button class="btn" onclick="go('keys')">Добавить ключ</button>
+        ${iconBtn('plus', 'Добавить ключ', "go('keys')", 'primary')}
       </div>`;
     return;
   }
@@ -563,7 +559,7 @@ function keyCard(k) {
       <div class="row">
         <strong>${esc(k.key.name)}</strong> ${badge} ${warn}
         <span class="spacer"></span>
-        <button class="btn ghost small" onclick="openKey(${k.key.id})">Подробно</button>
+        ${iconBtn('chart', 'Статистика ключа', `openKey(${k.key.id})`)}
       </div>
       ${c ? `
       <div style="margin-top:14px">
@@ -600,7 +596,7 @@ async function renderKeys(main) {
         <input id="kname" placeholder="Название (например, «Отдел разработки»)" style="flex:2;min-width:220px">
         <input id="kkey" placeholder="Ключ из code.1c.ai" style="flex:2;min-width:240px">
         ${ddHTML('ktariff', tariffOpts(''), '', 'flex:1;min-width:150px')}
-        <button class="btn" onclick="addKey()">Добавить</button>
+        ${iconBtn('plus', 'Добавить ключ', 'addKey()', 'primary')}
       </div>
     </div>
     <div class="card">
@@ -634,6 +630,16 @@ async function renderKeys(main) {
 
 const ACTION_ICONS = {
   refresh: '<path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v4.5h-4.5"/>',
+  clear: '<path d="m6 6 12 12M18 6 6 18"/>',
+  check: '<path d="m5 12 4 4L19 6"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  save: '<path d="M5 4h12l3 3v13H4V4zM8 4v6h8V4M8 20v-6h8v6"/>',
+  logIn: '<path d="M12 4h7v16h-7M4 12h11m-4-4 4 4-4 4"/>',
+  logOut: '<path d="M12 4H5v16h7m-1-8h9m-4-4 4 4-4 4"/>',
+  back: '<path d="M20 12H4m6-6-6 6 6 6"/>',
+  unlink: '<path d="m18.84 12.25 1.72-1.71a4.3 4.3 0 0 0-6.1-6.1l-1.71 1.72m-7.58 5.59-1.72 1.71a4.3 4.3 0 0 0 6.1 6.1l1.71-1.72M8 2v2M2 8h2m12 12v2m4-6h2"/>',
+  upload: '<path d="M12 15V4m-4 4 4-4 4 4M5 19h14"/>',
+  unlock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7-2.7"/>',
   chart: '<path d="M4 19V5"/><path d="M4 19h16"/><path d="M8 16v-4M12 16V8M16 16v-6"/>',
   edit: '<path d="M4 20h4l10-10-4-4L4 16z"/><path d="M14 6l4 4"/>',
   powerOff: '<path d="M12 4v8"/><path d="M7.5 7a7 7 0 1 0 9 0"/>',
@@ -652,10 +658,12 @@ const ACTION_ICONS = {
   auto: '<path d="M7 8h9"/><path d="M13 5l3 3-3 3"/><path d="M17 16H8"/><path d="M11 13l-3 3 3 3"/>',
 };
 
-function iconBtn(name, title, onclick, cls, disabled) {
-  const act = disabled ? 'disabled' : `onclick="${onclick}"`;
-  return `<button class="btn icon ghost ${cls || ''}" title="${esc(title)}" aria-label="${esc(title)}" ${act}>
-    <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ACTION_ICONS[name] || ''}</svg>
+function iconBtn(name, title, action, variant, disabled) {
+  const attrs = typeof action === 'string' ? { onclick: action } : action;
+  const act = disabled ? 'disabled' : Object.entries(attrs).map(([key, value]) => `${key}="${esc(value)}"`).join(' ');
+  const style = variant === 'primary' ? 'primary' : `ghost ${variant || ''}`;
+  return `<button type="button" class="btn icon ${style}" title="${esc(title)}" aria-label="${esc(title)}" ${act}>
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ACTION_ICONS[name] || ''}</svg>
   </button>`;
 }
 
@@ -707,6 +715,7 @@ async function deleteKey(id) {
     title: 'Удалить ключ?',
     text: 'Ключ удалится вместе с его токенами, сессиями и историей квоты. Отключить без удаления можно через диалог ключа.',
     ok: 'Удалить',
+    okIcon: 'trash',
     danger: true,
   });
   if (!ok) return;
@@ -736,14 +745,16 @@ async function openKeyEdit(id) {
   const tokenCount = (state.tokens || []).filter((t) => t.key_id === id).length;
   wrap.innerHTML = `
     <div class="modal">
-      <div class="row" style="align-items:center;margin-bottom:14px">
-        <h2 style="margin:0">Изменить ключ ${infoBtn('Измените значение ключа и сохраните — ключ заменится. Маску ключа в списке увидите, если не удалось его расшифровать. При доступе к админке по сети нужен HTTPS.', 'Про изменение ключа')}</h2>
-        <span class="spacer"></span>
-        <label class="switch" title="Включить или отключить ключ — шлюз перестанет отдавать его токенам">
-          <input type="checkbox" id="e_enabled" ${k.disabled ? '' : 'checked'}>
-          <span class="track"><span class="knob"></span></span>
-          <span class="switch-label">включён</span>
-        </label>
+      <div class="row dialog-heading">
+        <h2>Изменить ключ ${infoBtn('Измените значение ключа и сохраните — ключ заменится. Маску ключа в списке увидите, если не удалось его расшифровать. При доступе к админке по сети нужен HTTPS.', 'Про изменение ключа')}</h2>
+        <div class="row dialog-heading-actions">
+          <label class="switch" title="Включить или отключить ключ — шлюз перестанет отдавать его токенам">
+            <input type="checkbox" id="e_enabled" ${k.disabled ? '' : 'checked'}>
+            <span class="track"><span class="knob"></span></span>
+            <span class="switch-label">включён</span>
+          </label>
+          ${iconBtn('clear', 'Закрыть без сохранения', 'closeKeyEdit()')}
+        </div>
       </div>
       <div class="grid">
         <label>Название<input id="e_name" value="${esc(k.name)}"></label>
@@ -758,8 +769,7 @@ async function openKeyEdit(id) {
       <p class="muted small" style="margin:14px 0 0">Статус: ${esc(keyStatusText(k))} · токенов ${tokenCount}
         · создан ${fmtTime(k.created_at)}</p>
       <div class="row" style="justify-content:flex-end;margin-top:18px">
-        <button class="btn ghost" onclick="closeKeyEdit()">Отмена</button>
-        <button class="btn" onclick="saveKeyEdit(${k.id})">Сохранить</button>
+        ${iconBtn('save', 'Сохранить ключ', `saveKeyEdit(${k.id})`, 'primary')}
       </div>
     </div>`;
   wrap.addEventListener('click', (ev) => { if (ev.target === wrap) closeKeyEdit(); });
@@ -808,8 +818,10 @@ async function renderKeyUsage(main) {
   const e = u.estimate || {};
 
   main.innerHTML = `
-    <div class="row"><button class="btn ghost small" onclick="go('keys')">← К списку</button></div>
-    <h1>${esc(u.key.name)}</h1>
+    <header class="row key-usage-heading">
+      ${iconBtn('back', 'Вернуться к списку ключей', "go('keys')")}
+      <h1>${esc(u.key.name)}</h1>
+    </header>
 
     <div class="tabs">
       ${['24h', '7d', '30d'].map((r) =>
@@ -933,7 +945,7 @@ async function renderTokens(main) {
           { value: 'final', label: 'final — цельным куском' },
           { value: 'deltas', label: 'deltas — по мере готовности' },
         ], '', 'flex:1;min-width:200px')}
-        <button class="btn" onclick="addToken()">Выпустить</button>
+        ${iconBtn('plus', 'Выпустить токен', 'addToken()', 'primary')}
       </div>
     </div>
     <div class="card">
@@ -986,9 +998,9 @@ function showTokenModal(res) {
       <p class="muted small">Значение показывается один раз — сохраните его в настройках IDE.</p>
       <pre id="tokval">${esc(res.token)}</pre>
       <div class="row">
-        <button class="btn" onclick="copy(document.getElementById('tokval').textContent)">Скопировать</button>
+        ${iconBtn('copy', 'Скопировать токен', "copy(document.getElementById('tokval').textContent)", 'primary')}
         <span class="spacer"></span>
-        <button class="btn ghost" onclick="this.closest('.modal-backdrop').remove(); go('tokens')">Готово</button>
+        ${iconBtn('check', 'Готово', "this.closest('.modal-backdrop').remove(); go('tokens')")}
       </div>
     </div>`;
   document.body.appendChild(backdrop);
@@ -1006,6 +1018,7 @@ async function revokeToken(id) {
     title: 'Отозвать токен?',
     text: 'IDE перестанет подключаться с этим токеном. Вернуть его нельзя — только выпустить новый или «Сгенерировать новый» в диалоге.',
     ok: 'Отозвать',
+    okIcon: 'revoke',
     danger: true,
   });
   if (!ok) return;
@@ -1036,14 +1049,16 @@ function openTokenEdit(id) {
   wrap.id = 'token-modal';
   wrap.innerHTML = `
     <div class="modal">
-      <div class="row" style="align-items:center;margin-bottom:14px">
-        <h2 style="margin:0">Изменить токен</h2>
-        <span class="spacer"></span>
-        <label class="switch" title="${t.revoked_at ? 'Токен отозван — включить нельзя, только перевыпустить' : 'Включить или выключить токен'}">
-          <input type="checkbox" id="te_enabled" ${t.enabled && !t.revoked_at ? 'checked' : ''} ${t.revoked_at ? 'disabled' : ''}>
-          <span class="track"><span class="knob"></span></span>
-          <span class="switch-label">включён</span>
-        </label>
+      <div class="row dialog-heading">
+        <h2>Изменить токен</h2>
+        <div class="row dialog-heading-actions">
+          <label class="switch" title="${t.revoked_at ? 'Токен отозван — включить нельзя, только перевыпустить' : 'Включить или выключить токен'}">
+            <input type="checkbox" id="te_enabled" ${t.enabled && !t.revoked_at ? 'checked' : ''} ${t.revoked_at ? 'disabled' : ''}>
+            <span class="track"><span class="knob"></span></span>
+            <span class="switch-label">включён</span>
+          </label>
+          ${iconBtn('clear', 'Закрыть без сохранения', 'closeTokenEdit()')}
+        </div>
       </div>
       <div class="grid">
         <label>Название<input id="te_name" value="${esc(t.name)}"></label>
@@ -1068,8 +1083,7 @@ function openTokenEdit(id) {
       <p class="muted small">Префикс <span class="mono" id="te_prefix">${esc(t.prefix)}…</span> · создан ${fmtTime(t.created_at)}
         · последний запрос ${fmtTime(t.last_used_at)} · ${esc(status)}</p>
       <div class="row" style="justify-content:flex-end;margin-top:18px">
-        <button class="btn ghost" onclick="closeTokenEdit()">Отмена</button>
-        <button class="btn" onclick="saveTokenEdit(${t.id})">Сохранить</button>
+        ${iconBtn('save', 'Сохранить токен', `saveTokenEdit(${t.id})`, 'primary')}
       </div>
     </div>`;
   wrap.addEventListener('click', (ev) => { if (ev.target === wrap) closeTokenEdit(); });
@@ -1096,6 +1110,7 @@ async function rotateTokenField(id) {
     title: 'Сгенерировать новый токен?',
     text: 'Старое значение сразу перестанет работать, токен снова станет активным. Ключ, провайдер и поток сохранятся.',
     ok: 'Сгенерировать',
+    okIcon: 'rotate',
   });
   if (!ok) return;
   try {
@@ -1152,7 +1167,10 @@ async function renderSessions(main) {
             <td class="mono small muted">${esc(String(s.conversation).slice(0, 8))}…</td>
             <td class="small muted">${fmtTime(s.updated_at)}</td>
             <td style="text-align:right">
-              <button class="btn ghost small" type="button" data-reset-session data-token-id="${esc(s.token_id)}" data-protocol="${esc(s.protocol)}" data-session-id="${esc(s.session_id)}">Сбросить</button>
+              ${iconBtn('unlink', 'Сбросить сессию — следующий запрос начнёт новый диалог', {
+                'data-reset-session': '', 'data-token-id': s.token_id,
+                'data-protocol': s.protocol, 'data-session-id': s.session_id,
+              })}
             </td>
           </tr>`).join('') || '<tr><td colspan="6" class="muted">Активных сессий нет</td></tr>'}
         </tbody>
@@ -1179,6 +1197,13 @@ async function resetSession(tokenID, protocol, sessionID) {
 
 const LOG_PAGE_SIZE = 50;
 
+function logFilterTime(value, upper) {
+  const date = new Date(value);
+  // Поле datetime-local не передаёт часовой пояс. Переводим в UTC в браузере.
+  const endOfMinute = upper && /T\d{2}:\d{2}$/.test(value) ? 59000 : 0;
+  return new Date(date.getTime() + endOfMinute).toISOString();
+}
+
 // logQuery собирает параметры запроса журнала: активный отбор плюс то, что
 // передали явно. Один построитель на список и выгрузку — иначе фильтры в них
 // разъезжаются и CSV приходит не за тот период, что видно на экране.
@@ -1186,8 +1211,8 @@ function logQuery(extra) {
   const p = new URLSearchParams();
   const f = state.logFilter || {};
   if (f.tokenId) p.set('token_id', f.tokenId);
-  if (f.from) p.set('from', f.from);
-  if (f.to) p.set('to', f.to);
+  if (f.from) p.set('from', logFilterTime(f.from, false));
+  if (f.to) p.set('to', logFilterTime(f.to, true));
   if (extra) Object.entries(extra).forEach(([k, v]) => p.set(k, String(v)));
   return p.toString();
 }
@@ -1200,6 +1225,10 @@ function applyLogFilter() {
   const from = fromEl ? fromEl.value : '';
   const to = toEl ? toEl.value : '';
   const tokenId = ddValue('log-token') || '';
+  if ((from && isNaN(new Date(from))) || (to && isNaN(new Date(to)))) {
+    toast('Укажите корректную дату и время', true);
+    return;
+  }
   if (from && to && new Date(to) < new Date(from)) {
     toast('Дата «по» раньше даты «с»', true);
     return;
@@ -1213,13 +1242,6 @@ function resetLogFilter() {
   state.logFilter = { tokenId: '', from: '', to: '' };
   state.logOffset = 0;
   go('logs');
-}
-
-// logFilterActive сообщает, задано ли хоть одно условие отбора — по нему
-// показываем пояснение под панелью фильтров.
-function logFilterActive() {
-  const f = state.logFilter || {};
-  return !!(f.tokenId || f.from || f.to);
 }
 
 async function renderLogs(main) {
@@ -1251,47 +1273,43 @@ async function renderLogs(main) {
   const nextOff = iconBtn('next', 'Следующая страница', 'logsPage(1)', '', to >= res.total);
 
   main.innerHTML = `
-    <h1>Журнал запросов ${infoBtn('Что именно спрашивали пользователи: последняя реплика каждого запроса, до 2000 символов.', 'Про журнал')}</h1>
+    <h1>Журнал запросов ${infoBtn(
+      'Отбор действует на список, счётчик записей и выгрузку в CSV. Дата «по» включает указанную минуту целиком.<br><br>' +
+      'На странице до 50 записей. Нажмите на запись, чтобы прочитать последнюю реплику запроса (до 2000 символов).<br><br>' +
+      'CSV открывается в Excel. При удалении учитывается только число дней. Значение 0 удаляет весь журнал. Восстановить записи нельзя.',
+      'Справка по журналу запросов',
+    )}</h1>
 
-    <section class="card settings-section card-compact">
-      <div class="card-head">
-        <h2>Хранение и выгрузка ${infoBtn('Записи старше указанного числа дней удаляются безвозвратно; 0 — удалить весь журнал. Выгрузка — CSV, открывается в Excel.', 'Про хранение и выгрузку')}</h2>
-        <span class="spacer"></span>
-        <label class="inline-label">Удалить записи старше
-          <input id="log-days" type="number" min="0" max="3650" step="1" value="30" style="width:88px;margin-top:0">
-          дней
-        </label>
-        ${iconBtn('download', 'Выгрузить журнал в CSV', 'exportLogs()')}
-        ${iconBtn('trash', 'Удалить записи', 'purgeLogs()', 'danger')}
-      </div>
-    </section>
-
-    <section class="card settings-section">
-      <div class="card-head">
-        <h2>Отбор ${infoBtn('Фильтры действуют и на список, и на выгрузку в CSV. Период «по» включает указанную минуту целиком.', 'Про отбор')}</h2>
-        <span class="spacer"></span>
-        <button class="btn ghost small" type="button" onclick="resetLogFilter()">Сбросить</button>
-        <button class="btn small" type="button" onclick="applyLogFilter()">Применить</button>
-      </div>
-      <div class="row log-filter">
-        <label class="inline-label">Токен
+    <section class="card settings-section card-compact" aria-label="Отбор и действия журнала">
+      <div class="card-head log-toolbar">
+        <div class="row log-filter">
           ${ddHTML('log-token', [{ value: '', label: 'Все токены' }].concat(
             tokens.map((t) => ({ value: String(t.id), label: t.name || ('#' + t.id) }))
-          ), state.logFilter.tokenId, 'min-width:220px')}
-        </label>
-        <label class="inline-label">с
-          <input id="log-from" type="datetime-local" value="${esc(state.logFilter.from)}" style="margin-top:0">
-        </label>
-        <label class="inline-label">по
-          <input id="log-to" type="datetime-local" value="${esc(state.logFilter.to)}" style="margin-top:0">
-        </label>
+          ), state.logFilter.tokenId)}
+          <label class="inline-label">с
+            <input id="log-from" type="datetime-local" value="${esc(state.logFilter.from)}">
+          </label>
+          <label class="inline-label">по
+            <input id="log-to" type="datetime-local" value="${esc(state.logFilter.to)}">
+          </label>
+          <div class="row log-filter-actions">
+            ${iconBtn('clear', 'Сбросить отбор', 'resetLogFilter()')}
+            ${iconBtn('check', 'Применить отбор', 'applyLogFilter()', 'primary')}
+          </div>
+        </div>
+        <div class="row log-tools">
+          <label class="inline-label">Удалить записи старше
+            <input id="log-days" type="number" min="0" max="3650" step="1" value="30">
+            дней
+          </label>
+          ${iconBtn('trash', 'Удалить записи', 'purgeLogs()', 'danger')}
+          ${iconBtn('download', 'Выгрузить журнал в CSV', 'exportLogs()')}
+        </div>
       </div>
-      ${logFilterActive() ? '<p class="muted small" style="margin:10px 0 0">Показаны записи по отбору. «Всего записей» ниже — с учётом отбора.</p>' : ''}
     </section>
 
-    <section class="card settings-section">
+    <section class="card settings-section" aria-label="Записи журнала">
       <div class="card-head">
-        <h2>Записи ${infoBtn('Страница показывает 50 записей. Нажмите на строку, чтобы посмотреть подробности. Выгрузка в CSV отдаёт весь журнал с учётом отбора.', 'Про список записей')}</h2>
         <span class="muted small">Всего записей: ${fmtNum(res.total)}</span>
         <span class="spacer"></span>
         ${res.total ? `<span class="muted small">${fmtNum(from)}–${fmtNum(to)} из ${fmtNum(res.total)}</span>` : ''}
@@ -1358,6 +1376,7 @@ async function purgeLogs() {
       ? 'Будут удалены все записи журнала. Отменить это действие нельзя.'
       : `Будут удалены записи старше ${days} дн. Отменить это действие нельзя.`,
     ok: 'Удалить',
+    okIcon: 'trash',
     danger: true,
   });
   if (!ok) return;
@@ -1401,10 +1420,10 @@ function openLogEntry(id) {
   wrap.id = 'log-modal';
   wrap.innerHTML = `
     <div class="modal log-detail">
-      <div class="row" style="align-items:center;margin-bottom:14px">
-        <h2 style="margin:0">Запрос #${e.id}</h2>
-        <span class="spacer"></span>
+      <div class="row dialog-heading">
+        <h2>Запрос #${e.id}</h2>
         <span class="badge ${e.status >= 400 ? 'crit' : 'ok'}">${e.status}${e.error_type ? ' ' + esc(e.error_type) : ''}</span>
+        ${iconBtn('clear', 'Закрыть запись', 'closeLogEntry()')}
       </div>
       <div class="log-facts">
         ${fact('Время', esc(fmtDateTime(e.ts)))}
@@ -1428,9 +1447,6 @@ function openLogEntry(id) {
         : '<p class="muted small" style="margin:0">Текст запроса не сохранён — запрос отклонён до разбора тела.</p>'}
       <p class="muted small" style="margin:8px 0 0">Последняя реплика пользователя${truncated
         ? ', обрезана до 2000 символов' : ''}. Ответ модели в журнале не хранится.</p>
-      <div class="row" style="justify-content:flex-end;margin-top:18px">
-        <button class="btn" onclick="closeLogEntry()">Закрыть</button>
-      </div>
     </div>`;
   const onKey = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); closeLogEntry(); } };
   wrap._onKey = onKey;
@@ -1476,7 +1492,13 @@ function duplicateAddrs(list) {
 function paintListeners(main) {
   const dup = duplicateAddrs(state.listeners);
   main.innerHTML = `
-    <h1>Слушатели ${infoBtn('Можно слушать несколько портов одновременно. Для доступа из локальной сети укажите 0.0.0.0:порт. Админку держите на 127.0.0.1, если не нужен удалённый доступ.', 'Про слушателей')}</h1>
+    <header class="row page-heading">
+      <h1>Слушатели ${infoBtn('Можно слушать несколько портов одновременно. Для доступа из локальной сети укажите 0.0.0.0:порт. Админку держите на 127.0.0.1, если не нужен удалённый доступ.', 'Про слушателей')}</h1>
+      <div class="row">
+        ${iconBtn('plus', 'Добавить слушатель', 'addListenerRow()')}
+        ${iconBtn('save', 'Сохранить настройки слушателей', 'saveListeners()', 'primary')}
+      </div>
+    </header>
     <div class="card">
       <table>
         <thead><tr><th></th><th>Адрес</th><th>Тип</th><th></th></tr></thead>
@@ -1485,11 +1507,6 @@ function paintListeners(main) {
         </tbody>
       </table>
       ${dup.size ? `<p class="field-error">Адрес ${esc([...dup][0])} занят двумя включёнными слушателями — выключите один или измените порт.</p>` : ''}
-      <div class="row" style="margin-top:12px">
-        <button class="btn ghost" onclick="addListenerRow()">Добавить</button>
-        <span class="spacer"></span>
-        <button class="btn" onclick="saveListeners()">Применить</button>
-      </div>
     </div>`;
 }
 
@@ -1536,9 +1553,9 @@ function listenerTLS(i) {
       <input id="ltls-key" value="${esc(l.key_file || '')}" placeholder="C:\\certs\\server.key" style="width:100%">
       <p class="field-error" id="ltls-err" hidden></p>
       <div class="row" style="justify-content:flex-end;margin-top:16px">
-        <button class="btn ghost" data-act="cancel">Отмена</button>
-        <button class="btn ghost" data-act="clear">Снять HTTPS</button>
-        <button class="btn" data-act="ok">Сохранить</button>
+        ${iconBtn('clear', 'Отмена', { 'data-act': 'cancel' })}
+        ${iconBtn('unlock', 'Снять HTTPS', { 'data-act': 'clear' })}
+        ${iconBtn('save', 'Сохранить настройки HTTPS', { 'data-act': 'ok' }, 'primary')}
       </div>
     </div>`;
   const close = () => wrap.remove();
@@ -1658,16 +1675,35 @@ async function renderSettings(main) {
   const s = await api('/api/settings');
   state.settings = s;
   main.innerHTML = `
-    <h1>Настройки</h1>
+    <header class="row page-heading">
+      <h1>Настройки</h1>
+      ${iconBtn('save', 'Сохранить настройки', 'saveSettings()', 'primary')}
+    </header>
 
-    <section class="card settings-section">
-      <h2>Подключение ${infoBtn('Имя модели, которое видят IDE в сниппетах и в <code>/v1/models</code>. В API Напарника не уходит — можно задать любое: латиница, цифры, <code>- _ . : /</code>.', 'Про ID модели')}</h2>
-      <div class="grid cols2">
-        <label class="narrow">ID модели для подключения
-          <input id="s_model" value="${esc(s.model_id || 'naparnik')}" placeholder="naparnik">
-        </label>
-      </div>
-    </section>
+    <div class="grid settings-tiles">
+      <section class="card settings-section card-compact">
+        <div class="card-head">
+          <h2>Подключение ${infoBtn('Имя модели, которое видят IDE в сниппетах и в <code>/v1/models</code>. В API Напарника не уходит — можно задать любое: латиница, цифры, <code>- _ . : /</code>.', 'Про ID модели')}</h2>
+          <label class="inline-label settings-model-id">ID модели
+            <input id="s_model" value="${esc(s.model_id || 'naparnik')}" placeholder="naparnik">
+          </label>
+        </div>
+      </section>
+
+      <section class="card settings-section card-compact">
+        <div class="card-head">
+          <h2>Перенос настроек ${infoBtn(
+            'Чтобы перенести настройки на другую машину, выгрузите файл здесь и загрузите его в новом экземпляре с тем же паролем.<br><br>' +
+            'Файл содержит ключи Напарника, значения токенов, слушателей и настройки. Файл шифруется паролем. При загрузке текущие ключи и токены заменяются целиком. Перенесённые токены сохраняют свои значения.',
+            'Про перенос настроек',
+          )}</h2>
+          <div class="row">
+            ${iconBtn('download', 'Выгрузить настройки в файл', 'transferExportDialog()')}
+            ${iconBtn('upload', 'Загрузить настройки из файла', 'transferImportDialog()')}
+          </div>
+        </div>
+      </section>
+    </div>
 
     <section class="card settings-section">
       <h2>Ответы и сессии ${infoBtn('Как шлюз отдаёт текст клиенту и держит диалог с Напарником. Длительности вводятся числом с единицей: 30s, 5m, 2h. Таймаут запроса применяется после перезапуска сервиса.', 'Про ответы и сессии')}</h2>
@@ -1709,18 +1745,7 @@ async function renderSettings(main) {
           <input id="s_hook" value="${esc(s.alert_webhook || '')}" placeholder="https://...">
         </label>
       </div>
-    </section>
-
-    <section class="card settings-section">
-      <h2>Перенос настроек ${infoBtn('Файл содержит ключи Напарника, значения токенов, слушателей и настройки — и всегда шифруется паролем. При загрузке текущие ключи и токены заменяются целиком: клиентам не нужно менять токены, они переносятся вместе со значениями.', 'Про перенос')}</h2>
-      <p class="muted small" style="margin:0 0 12px">Для переезда на другую машину: выгрузите файл здесь, затем на новом экземпляре загрузите его с тем же паролем.</p>
-      <div class="row">
-        <button class="btn ghost" onclick="transferExportDialog()">Выгрузить в файл</button>
-        <button class="btn ghost" onclick="transferImportDialog()">Загрузить из файла</button>
-      </div>
-    </section>
-
-    <div class="row"><button class="btn" onclick="saveSettings()">Сохранить</button></div>`;
+    </section>`;
 }
 
 async function saveSettings() {
@@ -1792,8 +1817,8 @@ function transferExportDialog() {
       <input id="tr-pass2" type="password" autocomplete="new-password" style="width:100%">
       <p class="field-error" id="tr-err" hidden></p>
       <div class="row" style="justify-content:flex-end;margin-top:16px">
-        <button class="btn ghost" data-act="cancel">Отмена</button>
-        <button class="btn" data-act="ok">Выгрузить</button>
+        ${iconBtn('clear', 'Отмена', { 'data-act': 'cancel' })}
+        ${iconBtn('download', 'Выгрузить настройки', { 'data-act': 'ok' }, 'primary')}
       </div>
     </div>`;
   const close = () => wrap.remove();
@@ -1846,8 +1871,8 @@ function transferImportDialog() {
       <input id="tr-pass" type="password" autocomplete="current-password" style="width:100%">
       <p class="field-error" id="tr-err" hidden></p>
       <div class="row" style="justify-content:flex-end;margin-top:16px">
-        <button class="btn ghost" data-act="cancel">Отмена</button>
-        <button class="btn danger" data-act="ok">Заменить</button>
+        ${iconBtn('clear', 'Отмена', { 'data-act': 'cancel' })}
+        ${iconBtn('upload', 'Заменить настройки из файла', { 'data-act': 'ok' }, 'danger')}
       </div>
     </div>`;
   const close = () => wrap.remove();
@@ -2208,7 +2233,7 @@ function paintConnect(main) {
   const token = tokens.find((t) => String(t.id) === String(sel.tokenId));
   const warnings = [];
   if (!tokens.length) {
-    warnings.push(`<p class="muted small">Токенов пока нет — <button type="button" class="btn ghost small" onclick="go('tokens')">выпустить токен</button>. В инструкции останется плейсхолдер.</p>`);
+    warnings.push(`<div class="row muted small"><span>Токенов пока нет. В инструкции останется плейсхолдер.</span>${iconBtn('plus', 'Выпустить токен', "go('tokens')")}</div>`);
   } else if (token && !token.secret_available) {
     warnings.push(`<p class="muted small">У токена «${esc(token.name)}» значение не сохранено — вставьте его из диалога выпуска.</p>`);
   }

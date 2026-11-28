@@ -57,8 +57,9 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 		return nil, err
 	}
 	runtime := config.NewRuntime(cfg)
-	client := naparnik.NewWithTimeout(cfg.UpstreamBase, func() time.Duration {
-		return runtime.Snapshot().RequestTimeout.D()
+	client := naparnik.NewWithSettings(func() (string, time.Duration) {
+		current := runtime.Snapshot()
+		return current.UpstreamBase, current.RequestTimeout.D()
 	})
 	a := &App{
 		Cfg:     runtime,

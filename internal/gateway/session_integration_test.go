@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,65 @@ import (
 	"naparnikadmin/internal/secrets"
 	"naparnikadmin/internal/store"
 )
+
+func TestAuthDoesNotWaitForTokenTimestampOnLockedSQLite(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "test.db")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cipher, err := secrets.NewCipher(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := cipher.Encrypt("fixture-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyID, err := st.CreateKey(ctx, "fixture", "fixture", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const token = "fixture-token"
+	hash := secrets.HashToken(token)
+	if _, err := st.CreateToken(ctx, store.Token{KeyID: keyID, Name: "fixture", Enabled: true}, hash, ""); err != nil {
+		t.Fatal(err)
+	}
+	locker, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locker.Close()
+	conn, err := locker.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	defer conn.ExecContext(ctx, "ROLLBACK")
+	auth := &Auth{Store: st, Cipher: cipher}
+	start := time.Now()
+	if _, err := auth.Resolve(ctx, token); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("token timestamp blocked authentication for %v", elapsed)
+	}
+	if _, err := conn.ExecContext(ctx, "ROLLBACK"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.Resolve(ctx, token); err != nil {
+		t.Fatal(err)
+	}
+	touched, err := st.ResolveToken(ctx, hash)
+	if err != nil || touched.LastUsedAt == nil {
+		t.Fatalf("last usage was not recorded after releasing the lock: %v", err)
+	}
+}
 
 func TestSessionCheckpointsRespectResetAndExpiry(t *testing.T) {
 	for _, reset := range []bool{false, true} {

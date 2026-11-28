@@ -173,11 +173,38 @@ func (c *Config) Save() error {
 	if c.path == "" {
 		return fmt.Errorf("конфигурация не привязана к файлу")
 	}
-	if err := os.MkdirAll(filepath.Dir(c.path), 0o755); err != nil && filepath.Dir(c.path) != "." {
-		return err
-	}
 	data, err := yaml.Marshal(c)
 	if err != nil {
+		return err
+	}
+	return c.saveBytes(data)
+}
+
+// SaveReversible сохраняет конфигурацию и возвращает функцию восстановления
+// исходного файла на случай, если транзакция импорта не завершится.
+func (c *Config) SaveReversible() (func() error, error) {
+	previous, err := os.ReadFile(c.path)
+	missing := errors.Is(err, os.ErrNotExist)
+	if err != nil && !missing {
+		return nil, err
+	}
+	if err := c.Save(); err != nil {
+		return nil, err
+	}
+	return func() error {
+		if missing {
+			err := os.Remove(c.path)
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		return c.saveBytes(previous)
+	}, nil
+}
+
+func (c *Config) saveBytes(data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(c.path), 0o755); err != nil && filepath.Dir(c.path) != "." {
 		return err
 	}
 	f, err := os.CreateTemp(filepath.Dir(c.path), "."+filepath.Base(c.path)+"-*")
