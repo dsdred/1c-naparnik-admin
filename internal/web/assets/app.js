@@ -1514,6 +1514,7 @@ function listenerRow(l, i, dup) {
   const kinds = [
     { value: 'gateway', label: 'gateway — шлюз для IDE' },
     { value: 'admin', label: 'admin — админка' },
+    { value: 'metrics', label: 'metrics — Prometheus' },
   ];
   const addr = String(l.addr || '').trim();
   const clash = dup && dup.has(addr);

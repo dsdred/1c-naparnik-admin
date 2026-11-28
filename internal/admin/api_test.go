@@ -48,6 +48,7 @@ func TestValidateListeners(t *testing.T) {
 	base := []config.Listener{
 		{Addr: "127.0.0.1:47830", Kind: config.KindAdmin},
 		{Addr: "127.0.0.1:47831", Kind: config.KindGateway},
+		{Addr: "127.0.0.1:47835", Kind: config.KindMetrics},
 	}
 	if err := validateListeners(base); err != nil {
 		t.Fatalf("корректный набор отклонён: %v", err)

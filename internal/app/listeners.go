@@ -41,9 +41,14 @@ func loadListenerCertificate(l config.Listener) (*tls.Certificate, error) {
 
 func (a *App) prepareListener(l config.Listener, cert *tls.Certificate) *listener {
 	var handler http.Handler
-	if l.Kind == config.KindAdmin {
+	switch l.Kind {
+	case config.KindAdmin:
 		handler = a.AdminHandler()
-	} else {
+	case config.KindMetrics:
+		mux := http.NewServeMux()
+		mux.Handle("GET /metrics", a.metrics)
+		handler = mux
+	default:
 		handler = a.GatewayHandler()
 	}
 	srv := &http.Server{

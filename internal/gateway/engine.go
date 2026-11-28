@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"naparnikadmin/internal/config"
 	"naparnikadmin/internal/naparnik"
@@ -130,6 +131,9 @@ type Engine struct {
 	// Если не задан, используется стандартный журнал slog.
 	Log *slog.Logger
 
+	// ObserveRequest вызывается после завершения запроса движка, включая ошибки.
+	ObserveRequest func(protocol string, duration time.Duration, reply *Reply, err error)
+
 	client *naparnik.Client
 	store  *store.Store
 	cfg    config.Source
@@ -217,7 +221,11 @@ func (e *Engine) ResetSession(ctx context.Context, tokenID int64, protocol, sess
 }
 
 // Execute прогоняет запрос через Напарника и возвращает собранный ответ.
-func (e *Engine) Execute(ctx context.Context, in Input) (*Reply, error) {
+func (e *Engine) Execute(ctx context.Context, in Input) (reply *Reply, err error) {
+	if observe := e.ObserveRequest; observe != nil {
+		start := time.Now()
+		defer func() { observe(in.Protocol, time.Since(start), reply, err) }()
+	}
 	if strings.TrimSpace(in.Key) == "" {
 		return nil, &Error{Status: 401, Code: "no_token", Message: "у токена не настроен ключ Напарника"}
 	}
@@ -234,7 +242,7 @@ func (e *Engine) Execute(ctx context.Context, in Input) (*Reply, error) {
 	defer unlock()
 
 	ctx = e.client.PinEndpoint(ctx)
-	reply, err := e.executeLocked(ctx, in, sessionKey, sticky, false)
+	reply, err = e.executeLocked(ctx, in, sessionKey, sticky, false)
 	if err == nil || !conversationGone(err) || (reply != nil && len(reply.Parts) > 0) {
 		return reply, err
 	}

@@ -260,6 +260,77 @@ API Напарника отдаёт **только проценты** (`used_per
 
 Опрос `/budget` лимит не расходует, поэтому бюджеты снимаются каждые 5 минут и по кнопке «Обновить».
 
+### Prometheus
+
+На странице «Слушатели» добавьте включённый слушатель типа
+«metrics — Prometheus» с адресом `127.0.0.1:47835` и сохраните настройки.
+Альтернативно добавьте в существующий список `listeners` в `config.yaml`:
+
+```yaml
+  - addr: 127.0.0.1:47835
+    kind: metrics
+```
+
+В Prometheus добавьте задание в `scrape_configs`:
+
+```yaml
+  - job_name: naparnik-admin
+    static_configs:
+      - targets: ['127.0.0.1:47835']
+```
+
+По умолчанию слушатель метрик выключен. Для удалённого сбора укажите адрес
+приватного интерфейса сервера и ограничьте доступ к порту адресом Prometheus.
+В `targets` укажите адрес сервера, доступный с машины Prometheus.
+Слушатель не требует токен шлюза. Для HTTPS задайте сертификат слушателя
+и `scheme: https` в задании Prometheus.
+
+Проверьте endpoint из той же сети, где работает Prometheus:
+
+```bash
+curl -fsS http://127.0.0.1:47835/metrics
+```
+
+Ожидаемый результат — HTTP 200 и строка `naparnik_admin_up 1`.
+В самом Prometheus проверка `up{job="naparnik-admin"}` должна показать `1`
+для цели, которую удалось опросить.
+
+| Метрика | Тип | Что измеряет |
+| --- | --- | --- |
+| `naparnik_admin_up` | Gauge | Значение `1`, когда слушатель отдаёт метрики. |
+| `naparnik_admin_gateway_requests_total` | Counter | Завершённые запросы движка по `protocol` и `code`. Ошибки внутри SSE учитываются по коду результата движка. |
+| `naparnik_admin_gateway_request_duration_seconds` | Histogram | Время выполнения в секундах по `protocol`, включая очередь по сессии. |
+| `naparnik_admin_gateway_tokens_total` | Counter | Токены по `protocol` и `kind`: `input`, `output`, `cached`. Кэшированные уже входят во входные. |
+
+Метки `protocol` соответствуют OpenAI Chat Completions (`openai`), OpenAI
+Responses и Codex CLI (`responses`), Anthropic (`anthropic`) и Gemini
+(`gemini`). Метрики не содержат ключей, идентификаторов токенов и текста запросов.
+Счётчики сбрасываются при перезапуске. Расход учитывается, когда Напарник
+возвращает статистику. Запросы, отклонённые до входа в движок, например
+с недействительным токеном шлюза, в счётчики не входят.
+
+Примеры PromQL для окна в пять минут:
+
+```promql
+# Запросы в секунду по протоколам
+sum by (protocol) (rate(naparnik_admin_gateway_requests_total[5m]))
+
+# Ошибки движка 5xx в секунду по протоколам
+sum by (protocol) (rate(naparnik_admin_gateway_requests_total{code=~"5.."}[5m]))
+
+# p95 задержки в секундах по протоколам
+histogram_quantile(0.95, sum by (le, protocol) (
+  rate(naparnik_admin_gateway_request_duration_seconds_bucket[5m])
+))
+
+# Входные и выходные токены в секунду
+sum by (protocol, kind) (
+  rate(naparnik_admin_gateway_tokens_total{kind=~"input|output"}[5m])
+)
+```
+
+[Документация PromQL](https://prometheus.io/docs/prometheus/latest/querying/functions/)
+
 ## Ограничения
 
 - Только текст: изображения и вложения отклоняются с понятной ошибкой (API Напарника их не принимает).

@@ -34,6 +34,7 @@ type App struct {
 	Auth    *admin.Auth
 	Log     *slog.Logger
 
+	metrics *monitor.Metrics
 	mu      sync.Mutex
 	servers map[string]*listener
 	retired map[*http.Server]struct{}
@@ -69,10 +70,12 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 		Monitor: monitor.New(st, client, cipher, runtime, log),
 		Auth:    admin.NewAuth(st, masterKey),
 		Log:     log,
+		metrics: monitor.NewMetrics(),
 		servers: map[string]*listener{},
 		retired: map[*http.Server]struct{}{},
 	}
 	a.Engine.Log = log
+	a.Engine.ObserveRequest = a.metrics.ObserveRequest
 	return a, nil
 }
 

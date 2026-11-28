@@ -18,6 +18,7 @@ import (
 const (
 	KindGateway = "gateway"
 	KindAdmin   = "admin"
+	KindMetrics = "metrics"
 )
 
 // DefaultModelID — публичный id модели, который шлюз показывает клиентам,
@@ -290,7 +291,9 @@ func ValidateListeners(list []Listener) error {
 		if _, _, err := net.SplitHostPort(l.Addr); err != nil {
 			return fmt.Errorf("Неверный адрес: %s", l.Addr)
 		}
-		if l.Kind != KindGateway && l.Kind != KindAdmin {
+		switch l.Kind {
+		case KindGateway, KindAdmin, KindMetrics:
+		default:
 			return fmt.Errorf("Неизвестный тип слушателя: %s", l.Kind)
 		}
 		if l.Disabled {
