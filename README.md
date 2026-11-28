@@ -281,3 +281,7 @@ make icon    # иконка и версия в EXE (нужен go-winres)
 ```
 
 Структура: `cmd/` — CLI, `internal/naparnik` — клиент API Напарника, `internal/gateway` — сессии и маршрутизация инструментов, `internal/protocol/*` — адаптеры протоколов, `internal/monitor` — бюджеты и статистика, `internal/admin` + `internal/web` — админка (SPA и статика в `internal/web/assets`), `branding/` — исходники фирменного стиля: логотипы, иконки, баннер для GitHub.
+
+## Лицензия
+
+Проект распространяется под лицензией [MIT](LICENSE).
